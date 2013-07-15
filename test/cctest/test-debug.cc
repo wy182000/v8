@@ -29,10 +29,6 @@
 
 #include <stdlib.h>
 
-// TODO(dcarney): remove
-#define V8_ALLOW_ACCESS_TO_PERSISTENT_ARROW
-#define V8_ALLOW_ACCESS_TO_PERSISTENT_IMPLICIT
-
 #include "v8.h"
 
 #include "api.h"
@@ -147,12 +143,14 @@ class DebugLocalContext {
   inline ~DebugLocalContext() {
     context_->Exit();
   }
+  inline v8::Local<v8::Context> context() { return context_; }
   inline v8::Context* operator->() { return *context_; }
   inline v8::Context* operator*() { return *context_; }
   inline bool IsReady() { return !context_.IsEmpty(); }
   void ExposeDebug() {
     v8::internal::Isolate* isolate =
         reinterpret_cast<v8::internal::Isolate*>(context_->GetIsolate());
+    v8::internal::Factory* factory = isolate->factory();
     v8::internal::Debug* debug = isolate->debug();
     // Expose the debug context global object in the global object for testing.
     debug->Load();
@@ -162,7 +160,7 @@ class DebugLocalContext {
     Handle<JSGlobalProxy> global(Handle<JSGlobalProxy>::cast(
         v8::Utils::OpenHandle(*context_->Global())));
     Handle<v8::internal::String> debug_string =
-        FACTORY->InternalizeOneByteString(STATIC_ASCII_VECTOR("debug"));
+        factory->InternalizeOneByteString(STATIC_ASCII_VECTOR("debug"));
     SetProperty(isolate, global, debug_string,
                 Handle<Object>(debug->debug_context()->global_proxy(), isolate),
                 DONT_ENUM,
@@ -408,7 +406,7 @@ Handle<FixedArray> GetDebuggedFunctions() {
 
   // Allocate array for the debugged functions
   Handle<FixedArray> debugged_functions =
-      FACTORY->NewFixedArray(count);
+      Isolate::Current()->factory()->NewFixedArray(count);
 
   // Run through the debug info objects and collect all functions.
   count = 0;
@@ -511,7 +509,7 @@ void CheckDebugBreakFunction(DebugLocalContext* env,
   Handle<v8::internal::SharedFunctionInfo> shared(fun->shared());
   CHECK(Debug::HasDebugInfo(shared));
   TestBreakLocationIterator it1(Debug::GetDebugInfo(shared));
-  it1.FindBreakLocationFromPosition(position);
+  it1.FindBreakLocationFromPosition(position, v8::internal::STATEMENT_ALIGNED);
   v8::internal::RelocInfo::Mode actual_mode = it1.it()->rinfo()->rmode();
   if (actual_mode == v8::internal::RelocInfo::CODE_TARGET_WITH_ID) {
     actual_mode = v8::internal::RelocInfo::CODE_TARGET;
@@ -530,7 +528,7 @@ void CheckDebugBreakFunction(DebugLocalContext* env,
   CHECK(!debug->HasDebugInfo(shared));
   CHECK(debug->EnsureDebugInfo(shared, fun));
   TestBreakLocationIterator it2(Debug::GetDebugInfo(shared));
-  it2.FindBreakLocationFromPosition(position);
+  it2.FindBreakLocationFromPosition(position, v8::internal::STATEMENT_ALIGNED);
   actual_mode = it2.it()->rinfo()->rmode();
   if (actual_mode == v8::internal::RelocInfo::CODE_TARGET_WITH_ID) {
     actual_mode = v8::internal::RelocInfo::CODE_TARGET;
@@ -791,8 +789,8 @@ static void DebugEventCounter(v8::DebugEvent event,
     // Check whether the exception was uncaught.
     v8::Local<v8::String> fun_name = v8::String::New("uncaught");
     v8::Local<v8::Function> fun =
-        v8::Function::Cast(*event_data->Get(fun_name));
-    v8::Local<v8::Value> result = *fun->Call(event_data, 0, NULL);
+        v8::Local<v8::Function>::Cast(event_data->Get(fun_name));
+    v8::Local<v8::Value> result = fun->Call(event_data, 0, NULL);
     if (result->IsTrue()) {
       uncaught_exception_hit_count++;
     }
@@ -822,6 +820,8 @@ struct EvaluateCheck {
   const char* expr;  // An expression to evaluate when a break point is hit.
   v8::Handle<v8::Value> expected;  // The expected result.
 };
+
+
 // Array of checks to do.
 struct EvaluateCheck* checks = NULL;
 // Source for The JavaScript function which can do the evaluation when a break
@@ -1394,6 +1394,7 @@ static void CallWithBreakPoints(v8::Local<v8::Object> recv,
     CHECK_EQ((i + 1) * break_point_count, break_point_hit_count);
   }
 }
+
 
 // Test GC during break point processing.
 TEST(GCDuringBreakPointProcessing) {
@@ -2528,6 +2529,7 @@ static void CheckDebugEvent(const v8::Debug::EventDetails& eventDetails) {
   if (eventDetails.GetEvent() == v8::Break) ++debugEventCount;
 }
 
+
 // Test that the conditional breakpoints work event if code generation from
 // strings is prohibited in the debugee context.
 TEST(ConditionalBreakpointWithCodeGenerationDisallowed) {
@@ -2572,6 +2574,7 @@ static void CheckDebugEval(const v8::Debug::EventDetails& eventDetails) {
         eventDetails.GetEventContext()->Global(), 1, args)->IsTrue());
   }
 }
+
 
 // Test that the evaluation of expressions when a break point is hit generates
 // the correct results in case code generation from strings is disallowed in the
@@ -2626,6 +2629,7 @@ int AsciiToUtf16(const char* input_buffer, uint16_t* output_buffer) {
   output_buffer[i] = 0;
   return i;
 }
+
 
 // Copies a 16-bit string to a C string by dropping the high byte of
 // each character.  Does not check for buffer overflow.
@@ -2713,6 +2717,7 @@ static void DebugProcessDebugMessagesHandler(
     process_debug_messages_data.next();
   }
 }
+
 
 // Test that the evaluation of expressions works even from ProcessDebugMessages
 // i.e. with empty stack.
@@ -4143,6 +4148,7 @@ TEST(StepWithException) {
 
 
 TEST(DebugBreak) {
+  i::FLAG_stress_compaction = false;
 #ifdef VERIFY_HEAP
   i::FLAG_verify_heap = true;
 #endif
@@ -4266,43 +4272,47 @@ TEST(NoBreakWhenBootstrapping) {
   CheckDebuggerUnloaded();
 }
 
-static v8::Handle<v8::Array> NamedEnum(const v8::AccessorInfo&) {
+
+static void NamedEnum(const v8::PropertyCallbackInfo<v8::Array>& info) {
   v8::Handle<v8::Array> result = v8::Array::New(3);
   result->Set(v8::Integer::New(0), v8::String::New("a"));
   result->Set(v8::Integer::New(1), v8::String::New("b"));
   result->Set(v8::Integer::New(2), v8::String::New("c"));
-  return result;
+  info.GetReturnValue().Set(result);
 }
 
 
-static v8::Handle<v8::Array> IndexedEnum(const v8::AccessorInfo&) {
+static void IndexedEnum(const v8::PropertyCallbackInfo<v8::Array>& info) {
   v8::Handle<v8::Array> result = v8::Array::New(2);
   result->Set(v8::Integer::New(0), v8::Number::New(1));
   result->Set(v8::Integer::New(1), v8::Number::New(10));
-  return result;
+  info.GetReturnValue().Set(result);
 }
 
 
-static v8::Handle<v8::Value> NamedGetter(v8::Local<v8::String> name,
-                                         const v8::AccessorInfo& info) {
+static void NamedGetter(v8::Local<v8::String> name,
+                        const v8::PropertyCallbackInfo<v8::Value>& info) {
   v8::String::Utf8Value n(name);
   if (strcmp(*n, "a") == 0) {
-    return v8::String::New("AA");
+    info.GetReturnValue().Set(v8::String::New("AA"));
+    return;
   } else if (strcmp(*n, "b") == 0) {
-    return v8::String::New("BB");
+    info.GetReturnValue().Set(v8::String::New("BB"));
+    return;
   } else if (strcmp(*n, "c") == 0) {
-    return v8::String::New("CC");
+    info.GetReturnValue().Set(v8::String::New("CC"));
+    return;
   } else {
-    return v8::Undefined();
+    info.GetReturnValue().SetUndefined();
+    return;
   }
-
-  return name;
+  info.GetReturnValue().Set(name);
 }
 
 
-static v8::Handle<v8::Value> IndexedGetter(uint32_t index,
-                                           const v8::AccessorInfo& info) {
-  return v8::Number::New(index + 1);
+static void IndexedGetter(uint32_t index,
+                          const v8::PropertyCallbackInfo<v8::Value>& info) {
+  info.GetReturnValue().Set(static_cast<double>(index + 1));
 }
 
 
@@ -4532,9 +4542,10 @@ TEST(HiddenPrototypePropertyMirror) {
 }
 
 
-static v8::Handle<v8::Value> ProtperyXNativeGetter(
-    v8::Local<v8::String> property, const v8::AccessorInfo& info) {
-  return v8::Integer::New(10);
+static void ProtperyXNativeGetter(
+    v8::Local<v8::String> property,
+    const v8::PropertyCallbackInfo<v8::Value>& info) {
+  info.GetReturnValue().Set(10);
 }
 
 
@@ -4569,9 +4580,10 @@ TEST(NativeGetterPropertyMirror) {
 }
 
 
-static v8::Handle<v8::Value> ProtperyXNativeGetterThrowingError(
-    v8::Local<v8::String> property, const v8::AccessorInfo& info) {
-  return CompileRun("throw new Error('Error message');");
+static void ProtperyXNativeGetterThrowingError(
+    v8::Local<v8::String> property,
+    const v8::PropertyCallbackInfo<v8::Value>& info) {
+  CompileRun("throw new Error('Error message');");
 }
 
 
@@ -4705,6 +4717,7 @@ ThreadBarrier::ThreadBarrier(int num_threads)
   invalid_ = false;  // A barrier may only be used once.  Then it is invalid.
 }
 
+
 // Do not call, due to race condition with Wait().
 // Could be resolved with Pthread condition variables.
 ThreadBarrier::~ThreadBarrier() {
@@ -4712,6 +4725,7 @@ ThreadBarrier::~ThreadBarrier() {
   delete lock_;
   delete sem_;
 }
+
 
 void ThreadBarrier::Wait() {
   lock_->Lock();
@@ -4731,6 +4745,7 @@ void ThreadBarrier::Wait() {
     sem_->Wait();  // these two lines are not atomic.
   }
 }
+
 
 // A set containing enough barriers and semaphores for any of the tests.
 class Barriers {
@@ -4841,6 +4856,7 @@ int GetSourceLineFromBreakEventMessage(char *message) {
   return res;
 }
 
+
 /* Test MessageQueues */
 /* Tests the message queues that hold debugger commands and
  * response messages to the debugger.  Fills queues and makes
@@ -4871,6 +4887,7 @@ static void MessageHandler(const uint16_t* message, int length,
   // messages while blocked.
   message_queue_barriers.semaphore_1->Wait();
 }
+
 
 void MessageQueueDebuggerThread::Run() {
   const int kBufferSize = 1000;
@@ -5114,9 +5131,9 @@ class DebuggerThread : public v8::internal::Thread {
 };
 
 
-static v8::Handle<v8::Value> ThreadedAtBarrier1(const v8::Arguments& args) {
+static void ThreadedAtBarrier1(
+    const v8::FunctionCallbackInfo<v8::Value>& args) {
   threaded_debugging_barriers.barrier_1.Wait();
-  return v8::Undefined();
 }
 
 
@@ -5171,6 +5188,7 @@ void V8Thread::Run() {
   CompileRun(source);
 }
 
+
 void DebuggerThread::Run() {
   const int kBufSize = 1000;
   uint16_t buffer[kBufSize];
@@ -5204,6 +5222,7 @@ TEST(ThreadedDebugging) {
   v8_thread.Join();
   debugger_thread.Join();
 }
+
 
 /* Test RecursiveBreakpoints */
 /* In this test, the debugger evaluates a function with a breakpoint, after
@@ -5396,6 +5415,7 @@ void BreakpointsDebuggerThread::Run() {
   v8::Debug::SendCommand(buffer, AsciiToUtf16(command_8, buffer));
 }
 
+
 void TestRecursiveBreakpointsGeneric(bool global_evaluate) {
   i::FLAG_debugger_auto_break = true;
 
@@ -5414,9 +5434,11 @@ void TestRecursiveBreakpointsGeneric(bool global_evaluate) {
   breakpoints_debugger_thread.Join();
 }
 
+
 TEST(RecursiveBreakpoints) {
   TestRecursiveBreakpointsGeneric(false);
 }
+
 
 TEST(RecursiveBreakpointsGlobal) {
   TestRecursiveBreakpointsGeneric(true);
@@ -5482,28 +5504,27 @@ v8::Handle<v8::Function> debugger_call_with_closure;
 
 // Function to retrieve the number of JavaScript frames by calling a JavaScript
 // in the debugger.
-static v8::Handle<v8::Value> CheckFrameCount(const v8::Arguments& args) {
+static void CheckFrameCount(const v8::FunctionCallbackInfo<v8::Value>& args) {
   CHECK(v8::Debug::Call(frame_count)->IsNumber());
   CHECK_EQ(args[0]->Int32Value(),
            v8::Debug::Call(frame_count)->Int32Value());
-  return v8::Undefined();
 }
 
 
 // Function to retrieve the source line of the top JavaScript frame by calling a
 // JavaScript function in the debugger.
-static v8::Handle<v8::Value> CheckSourceLine(const v8::Arguments& args) {
+static void CheckSourceLine(const v8::FunctionCallbackInfo<v8::Value>& args) {
   CHECK(v8::Debug::Call(frame_source_line)->IsNumber());
   CHECK_EQ(args[0]->Int32Value(),
            v8::Debug::Call(frame_source_line)->Int32Value());
-  return v8::Undefined();
 }
 
 
 // Function to test passing an additional parameter to a JavaScript function
 // called in the debugger. It also tests that functions called in the debugger
 // can throw exceptions.
-static v8::Handle<v8::Value> CheckDataParameter(const v8::Arguments& args) {
+static void CheckDataParameter(
+    const v8::FunctionCallbackInfo<v8::Value>& args) {
   v8::Handle<v8::String> data = v8::String::New("Test");
   CHECK(v8::Debug::Call(debugger_call_with_data, data)->IsString());
 
@@ -5514,16 +5535,13 @@ static v8::Handle<v8::Value> CheckDataParameter(const v8::Arguments& args) {
   v8::Debug::Call(debugger_call_with_data);
   CHECK(catcher.HasCaught());
   CHECK(catcher.Exception()->IsString());
-
-  return v8::Undefined();
 }
 
 
 // Function to test using a JavaScript with closure in the debugger.
-static v8::Handle<v8::Value> CheckClosure(const v8::Arguments& args) {
+static void CheckClosure(const v8::FunctionCallbackInfo<v8::Value>& args) {
   CHECK(v8::Debug::Call(debugger_call_with_closure)->IsNumber());
   CHECK_EQ(3, v8::Debug::Call(debugger_call_with_closure)->Int32Value());
-  return v8::Undefined();
 }
 
 
@@ -6270,8 +6288,6 @@ TEST(ContextData) {
   v8::Isolate* isolate = v8::Isolate::GetCurrent();
   v8::HandleScope scope(isolate);
 
-  v8::Debug::SetMessageHandler2(ContextCheckMessageHandler);
-
   // Create two contexts.
   v8::Handle<v8::Context> context_1;
   v8::Handle<v8::Context> context_2;
@@ -6280,6 +6296,8 @@ TEST(ContextData) {
   v8::Handle<v8::Value> global_object = v8::Handle<v8::Value>();
   context_1 = v8::Context::New(isolate, NULL, global_template, global_object);
   context_2 = v8::Context::New(isolate, NULL, global_template, global_object);
+
+  v8::Debug::SetMessageHandler2(ContextCheckMessageHandler);
 
   // Default data value is undefined.
   CHECK(context_1->GetEmbedderData(0)->IsUndefined());
@@ -6438,13 +6456,16 @@ TEST(RegExpDebugBreak) {
 
 
 // Common part of EvalContextData and NestedBreakEventContextData tests.
-static void ExecuteScriptForContextCheck() {
+static void ExecuteScriptForContextCheck(
+    v8::Debug::MessageHandler2 message_handler) {
   // Create a context.
   v8::Handle<v8::Context> context_1;
   v8::Handle<v8::ObjectTemplate> global_template =
       v8::Handle<v8::ObjectTemplate>();
   context_1 =
       v8::Context::New(v8::Isolate::GetCurrent(), NULL, global_template);
+
+  v8::Debug::SetMessageHandler2(message_handler);
 
   // Default data value is undefined.
   CHECK(context_1->GetEmbedderData(0)->IsUndefined());
@@ -6460,11 +6481,13 @@ static void ExecuteScriptForContextCheck() {
   // Enter and run function in the context.
   {
     v8::Context::Scope context_scope(context_1);
-    expected_context = v8::Local<v8::Context>(*context_1);
+    expected_context = context_1;
     expected_context_data = data_1;
     v8::Local<v8::Function> f = CompileFunction(source, "f");
     f->Call(context_1->Global(), 0, NULL);
   }
+
+  v8::Debug::SetMessageHandler2(NULL);
 }
 
 
@@ -6474,13 +6497,11 @@ static void ExecuteScriptForContextCheck() {
 // Message.GetEventContext.
 TEST(EvalContextData) {
   v8::HandleScope scope(v8::Isolate::GetCurrent());
-  v8::Debug::SetMessageHandler2(ContextCheckMessageHandler);
 
-  ExecuteScriptForContextCheck();
+  ExecuteScriptForContextCheck(ContextCheckMessageHandler);
 
   // One time compile event and one time break event.
   CHECK_GT(message_handler_hit_count, 2);
-  v8::Debug::SetMessageHandler2(NULL);
   CheckDebuggerUnloaded();
 }
 
@@ -6539,16 +6560,14 @@ TEST(NestedBreakEventContextData) {
   v8::HandleScope scope(v8::Isolate::GetCurrent());
   break_count = 0;
   message_handler_hit_count = 0;
-  v8::Debug::SetMessageHandler2(DebugEvalContextCheckMessageHandler);
 
-  ExecuteScriptForContextCheck();
+  ExecuteScriptForContextCheck(DebugEvalContextCheckMessageHandler);
 
   // One time compile event and two times break event.
   CHECK_GT(message_handler_hit_count, 3);
 
   // One break from the source and another from the evaluate request.
   CHECK_EQ(break_count, 2);
-  v8::Debug::SetMessageHandler2(NULL);
   CheckDebuggerUnloaded();
 }
 
@@ -6579,7 +6598,7 @@ TEST(ScriptCollectedEvent) {
 
   // Do garbage collection to ensure that only the script in this test will be
   // collected afterwards.
-  HEAP->CollectAllGarbage(Heap::kNoGCFlags);
+  HEAP->CollectAllGarbage(Heap::kAbortIncrementalMarkingMask);
 
   script_collected_count = 0;
   v8::Debug::SetDebugEventListener(DebugEventScriptCollectedEvent,
@@ -6591,7 +6610,7 @@ TEST(ScriptCollectedEvent) {
 
   // Do garbage collection to collect the script above which is no longer
   // referenced.
-  HEAP->CollectAllGarbage(Heap::kNoGCFlags);
+  HEAP->CollectAllGarbage(Heap::kAbortIncrementalMarkingMask);
 
   CHECK_EQ(2, script_collected_count);
 
@@ -6615,6 +6634,7 @@ static void ScriptCollectedMessageHandler(const v8::Debug::Message& message) {
 // Test that GetEventContext doesn't fail and return empty handle for
 // ScriptCollected events.
 TEST(ScriptCollectedEventContext) {
+  i::FLAG_stress_compaction = false;
   v8::Isolate* isolate = v8::Isolate::GetCurrent();
   v8::internal::Debug* debug =
       reinterpret_cast<v8::internal::Isolate*>(isolate)->debug();
@@ -6626,25 +6646,39 @@ TEST(ScriptCollectedEventContext) {
     v8::HandleScope scope(isolate);
     context.Reset(isolate, v8::Context::New(isolate));
   }
-  context->Enter();
+
+  // Enter context.  We can't have a handle to the context in the outer
+  // scope, so we have to do it the hard way.
+  {
+    v8::HandleScope scope(isolate);
+    v8::Local<v8::Context> local_context =
+        v8::Local<v8::Context>::New(isolate, context);
+    local_context->Enter();
+  }
 
   // Request the loaded scripts to initialize the debugger script cache.
   debug->GetLoadedScripts();
 
   // Do garbage collection to ensure that only the script in this test will be
   // collected afterwards.
-  HEAP->CollectAllGarbage(Heap::kNoGCFlags);
+  HEAP->CollectAllGarbage(Heap::kAbortIncrementalMarkingMask);
 
   v8::Debug::SetMessageHandler2(ScriptCollectedMessageHandler);
   v8::Script::Compile(v8::String::New("eval('a=1')"))->Run();
   v8::Script::Compile(v8::String::New("eval('a=2')"))->Run();
 
-  context->Exit();
+  // Leave context
+  {
+    v8::HandleScope scope(isolate);
+    v8::Local<v8::Context> local_context =
+        v8::Local<v8::Context>::New(isolate, context);
+    local_context->Exit();
+  }
   context.Dispose(isolate);
 
   // Do garbage collection to collect the script above which is no longer
   // referenced.
-  HEAP->CollectAllGarbage(Heap::kNoGCFlags);
+  HEAP->CollectAllGarbage(Heap::kAbortIncrementalMarkingMask);
 
   CHECK_EQ(2, script_collected_message_count);
 
@@ -6858,6 +6892,7 @@ static void CountingMessageHandler(const v8::Debug::Message& message) {
   counting_message_handler_counter++;
 }
 
+
 // Test that debug messages get processed when ProcessDebugMessages is called.
 TEST(ProcessDebugMessages) {
   DebugLocalContext env;
@@ -7005,9 +7040,9 @@ v8::Handle<v8::Context> debugger_context;
 
 // Property getter that checks that current and calling contexts
 // are both the debugee contexts.
-static v8::Handle<v8::Value> NamedGetterWithCallingContextCheck(
+static void NamedGetterWithCallingContextCheck(
     v8::Local<v8::String> name,
-    const v8::AccessorInfo& info) {
+    const v8::PropertyCallbackInfo<v8::Value>& info) {
   CHECK_EQ(0, strcmp(*v8::String::Utf8Value(name), "a"));
   v8::Handle<v8::Context> current = v8::Context::GetCurrent();
   CHECK(current == debugee_context);
@@ -7015,7 +7050,7 @@ static v8::Handle<v8::Value> NamedGetterWithCallingContextCheck(
   v8::Handle<v8::Context> calling = v8::Context::GetCalling();
   CHECK(calling == debugee_context);
   CHECK(calling != debugger_context);
-  return v8::Int32::New(1);
+  info.GetReturnValue().Set(1);
 }
 
 
@@ -7030,11 +7065,11 @@ static void DebugEventGetAtgumentPropertyValue(
   if (event == v8::Break) {
     break_point_hit_count++;
     CHECK(debugger_context == v8::Context::GetCurrent());
-    v8::Handle<v8::Function> func(v8::Function::Cast(*CompileRun(
+    v8::Handle<v8::Function> func = v8::Handle<v8::Function>::Cast(CompileRun(
         "(function(exec_state) {\n"
         "    return (exec_state.frame(0).argumentValue(0).property('a').\n"
         "            value().value() == 1);\n"
-        "})")));
+        "})"));
     const int argc = 1;
     v8::Handle<v8::Value> argv[argc] = { exec_state };
     v8::Handle<v8::Value> result = func->Call(exec_state, argc, argv);
@@ -7052,7 +7087,7 @@ TEST(CallingContextIsNotDebugContext) {
 
   // Save handles to the debugger and debugee contexts to be used in
   // NamedGetterWithCallingContextCheck.
-  debugee_context = v8::Local<v8::Context>(*env);
+  debugee_context = env.context();
   debugger_context = v8::Utils::ToLocal(debug->debug_context());
 
   // Create object with 'a' property accessor.
@@ -7097,14 +7132,15 @@ static void DebugEventContextChecker(const v8::Debug::EventDetails& details) {
   CHECK_EQ(expected_callback_data, details.GetCallbackData());
 }
 
+
 // Check that event details contain context where debug event occured.
 TEST(DebugEventContext) {
   v8::Isolate* isolate = v8::Isolate::GetCurrent();
   v8::HandleScope scope(isolate);
   expected_callback_data = v8::Int32::New(2010);
+  expected_context = v8::Context::New(isolate);
   v8::Debug::SetDebugEventListener2(DebugEventContextChecker,
                                     expected_callback_data);
-  expected_context = v8::Context::New(isolate);
   v8::Context::Scope context_scope(expected_context);
   v8::Script::Compile(v8::String::New("(function(){debugger;})();"))->Run();
   expected_context.Clear();
@@ -7290,11 +7326,10 @@ static void DebugEventBreakWithOptimizedStack(v8::DebugEvent event,
 }
 
 
-static v8::Handle<v8::Value> ScheduleBreak(const v8::Arguments& args) {
+static void ScheduleBreak(const v8::FunctionCallbackInfo<v8::Value>& args) {
   v8::Debug::SetDebugEventListener(DebugEventBreakWithOptimizedStack,
                                    v8::Undefined());
   v8::Debug::DebugBreak();
-  return v8::Undefined();
 }
 
 

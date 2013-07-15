@@ -111,7 +111,6 @@ class AccessorInfo;
 class Allocation;
 class Arguments;
 class Assembler;
-class AssertNoAllocation;
 class Code;
 class CodeGenerator;
 class CodeStub;
@@ -181,12 +180,13 @@ enum AllocationSpace {
   CODE_SPACE,           // No pointers to new space, marked executable.
   MAP_SPACE,            // Only and all map objects.
   CELL_SPACE,           // Only and all cell objects.
+  PROPERTY_CELL_SPACE,  // Only and all global property cell objects.
   LO_SPACE,             // Promoted large objects.
 
   FIRST_SPACE = NEW_SPACE,
   LAST_SPACE = LO_SPACE,
   FIRST_PAGED_SPACE = OLD_POINTER_SPACE,
-  LAST_PAGED_SPACE = CELL_SPACE
+  LAST_PAGED_SPACE = PROPERTY_CELL_SPACE
 };
 const int kSpaceTagSize = 3;
 const int kSpaceTagMask = (1 << kSpaceTagSize) - 1;
@@ -418,6 +418,17 @@ enum CpuImplementer {
 };
 
 
+enum CpuPart {
+  CPU_UNKNOWN,
+  CORTEX_A15,
+  CORTEX_A12,
+  CORTEX_A9,
+  CORTEX_A8,
+  CORTEX_A7,
+  CORTEX_A5
+};
+
+
 // Feature flags bit positions. They are mostly based on the CPUID spec.
 // (We assign CPUID itself to one of the currently reserved bits --
 // feel free to change this if needed.)
@@ -434,6 +445,7 @@ enum CpuFeature { SSE4_1 = 32 + 19,  // x86
                   UNALIGNED_ACCESSES = 4,  // ARM
                   MOVW_MOVT_IMMEDIATE_LOADS = 5,  // ARM
                   VFP32DREGS = 6,  // ARM
+                  NEON = 7,    // ARM
                   SAHF = 0,    // x86
                   FPU = 1};    // MIPS
 

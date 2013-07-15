@@ -32,10 +32,6 @@
 #endif
 #include <signal.h>
 
-// TODO(dcarney): remove
-#define V8_ALLOW_ACCESS_TO_PERSISTENT_ARROW
-#define V8_ALLOW_ACCESS_TO_PERSISTENT_IMPLICIT
-
 #include "v8.h"
 
 #include "bootstrapper.h"
@@ -176,7 +172,8 @@ class CppByteSink : public PartialSnapshotSink {
       int data_space_used,
       int code_space_used,
       int map_space_used,
-      int cell_space_used) {
+      int cell_space_used,
+      int property_cell_space_used) {
     fprintf(fp_,
             "const int Snapshot::%snew_space_used_ = %d;\n",
             prefix,
@@ -201,6 +198,10 @@ class CppByteSink : public PartialSnapshotSink {
             "const int Snapshot::%scell_space_used_ = %d;\n",
             prefix,
             cell_space_used);
+    fprintf(fp_,
+            "const int Snapshot::%sproperty_cell_space_used_ = %d;\n",
+            prefix,
+            property_cell_space_used);
   }
 
   void WritePartialSnapshot() {
@@ -308,8 +309,13 @@ void DumpException(Handle<Message> message) {
 
 
 int main(int argc, char** argv) {
+  V8::InitializeICU();
+
   // By default, log code create information in the snapshot.
   i::FLAG_log_code = true;
+
+  // Disable the i18n extension, as it doesn't support being snapshotted yet.
+  i::FLAG_enable_i18n = false;
 
   // Print the usage if an error occurs when parsing the command line
   // flags or if the help flag is set.
@@ -341,10 +347,10 @@ int main(int argc, char** argv) {
     exit(1);
   }
   if (i::FLAG_extra_code != NULL) {
-    context->Enter();
     // Capture 100 frames if anything happens.
     V8::SetCaptureStackTraceForUncaughtExceptions(true, 100);
     HandleScope scope(isolate);
+    v8::Context::Scope(v8::Local<v8::Context>::New(isolate, context));
     const char* name = i::FLAG_extra_code;
     FILE* file = i::OS::FOpen(name, "rb");
     if (file == NULL) {
@@ -381,7 +387,6 @@ int main(int argc, char** argv) {
       DumpException(try_catch.Message());
       exit(1);
     }
-    context->Exit();
   }
   // Make sure all builtin scripts are cached.
   { HandleScope scope(isolate);
@@ -392,8 +397,8 @@ int main(int argc, char** argv) {
   // If we don't do this then we end up with a stray root pointing at the
   // context even after we have disposed of the context.
   HEAP->CollectAllGarbage(i::Heap::kNoGCFlags, "mksnapshot");
-  i::Object* raw_context = *(v8::Utils::OpenHandle(*context));
-  context.Dispose(context->GetIsolate());
+  i::Object* raw_context = *v8::Utils::OpenPersistent(context);
+  context.Dispose(isolate);
   CppByteSink sink(argv[1]);
   // This results in a somewhat smaller snapshot, probably because it gets rid
   // of some things that are cached between garbage collections.
@@ -422,7 +427,8 @@ int main(int argc, char** argv) {
       partial_ser.CurrentAllocationAddress(i::OLD_DATA_SPACE),
       partial_ser.CurrentAllocationAddress(i::CODE_SPACE),
       partial_ser.CurrentAllocationAddress(i::MAP_SPACE),
-      partial_ser.CurrentAllocationAddress(i::CELL_SPACE));
+      partial_ser.CurrentAllocationAddress(i::CELL_SPACE),
+      partial_ser.CurrentAllocationAddress(i::PROPERTY_CELL_SPACE));
   sink.WriteSpaceUsed(
       "",
       ser.CurrentAllocationAddress(i::NEW_SPACE),
@@ -430,6 +436,7 @@ int main(int argc, char** argv) {
       ser.CurrentAllocationAddress(i::OLD_DATA_SPACE),
       ser.CurrentAllocationAddress(i::CODE_SPACE),
       ser.CurrentAllocationAddress(i::MAP_SPACE),
-      ser.CurrentAllocationAddress(i::CELL_SPACE));
+      ser.CurrentAllocationAddress(i::CELL_SPACE),
+      ser.CurrentAllocationAddress(i::PROPERTY_CELL_SPACE));
   return 0;
 }

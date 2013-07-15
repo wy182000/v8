@@ -56,8 +56,6 @@ class LCodeGen BASE_EMBEDDED {
         deoptimizations_(4, info->zone()),
         deopt_jump_table_(4, info->zone()),
         deoptimization_literals_(8, info->zone()),
-        prototype_maps_(0, info->zone()),
-        transition_maps_(0, info->zone()),
         inlined_function_count_(0),
         scope_(info->scope()),
         status_(UNUSED),
@@ -81,7 +79,6 @@ class LCodeGen BASE_EMBEDDED {
   Heap* heap() const { return isolate()->heap(); }
   Zone* zone() const { return zone_; }
 
-  // TODO(svenpanne) Use this consistently.
   int LookupDestination(int block_id) const {
     return chunk()->LookupDestination(block_id);
   }
@@ -119,6 +116,7 @@ class LCodeGen BASE_EMBEDDED {
                                        SwVfpRegister flt_scratch,
                                        DwVfpRegister dbl_scratch);
   int ToInteger32(LConstantOperand* op) const;
+  Smi* ToSmi(LConstantOperand* op) const;
   double ToDouble(LConstantOperand* op) const;
   Operand ToOperand(LOperand* op);
   MemOperand ToMemOperand(LOperand* op) const;
@@ -139,10 +137,6 @@ class LCodeGen BASE_EMBEDDED {
   void FinishCode(Handle<Code> code);
 
   // Deferred code support.
-  void DoDeferredBinaryOpStub(LPointerMap* pointer_map,
-                              LOperand* left_argument,
-                              LOperand* right_argument,
-                              Token::Value op);
   void DoDeferredNumberTagD(LNumberTagD* instr);
 
   enum IntegerSignedness { SIGNED_INT32, UNSIGNED_INT32 };
@@ -177,10 +171,7 @@ class LCodeGen BASE_EMBEDDED {
                                  int additional_offset);
 
   // Emit frame translation commands for an environment.
-  void WriteTranslation(LEnvironment* environment,
-                        Translation* translation,
-                        int* arguments_index,
-                        int* arguments_count);
+  void WriteTranslation(LEnvironment* environment, Translation* translation);
 
   // Declare methods that deal with the individual node types.
 #define DECLARE_DO(type) void Do##type(L##type* node);
@@ -299,10 +290,7 @@ class LCodeGen BASE_EMBEDDED {
   void AddToTranslation(Translation* translation,
                         LOperand* op,
                         bool is_tagged,
-                        bool is_uint32,
-                        bool arguments_known,
-                        int arguments_index,
-                        int arguments_count);
+                        bool is_uint32);
   void RegisterDependentCodeForEmbeddedMaps(Handle<Code> code);
   void PopulateDeoptimizationData(Handle<Code> code);
   int DefineDeoptimizationLiteral(Handle<Object> literal);
@@ -331,10 +319,11 @@ class LCodeGen BASE_EMBEDDED {
 
   static Condition TokenToCondition(Token::Value op, bool is_unsigned);
   void EmitGoto(int block);
-  void EmitBranch(int left_block, int right_block, Condition cc);
+  template<class InstrType>
+  void EmitBranch(InstrType instr, Condition cc);
   void EmitNumberUntagD(Register input,
                         DwVfpRegister result,
-                        bool deoptimize_on_undefined,
+                        bool allow_undefined_as_nan,
                         bool deoptimize_on_minus_zero,
                         LEnvironment* env,
                         NumberUntagDMode mode);
@@ -360,7 +349,8 @@ class LCodeGen BASE_EMBEDDED {
   // true and false label should be made, to optimize fallthrough.
   Condition EmitIsString(Register input,
                          Register temp1,
-                         Label* is_not_string);
+                         Label* is_not_string,
+                         SmiCheck check_needed);
 
   // Emits optimized code for %_IsConstructCall().
   // Caller should branch on equal condition.
@@ -410,8 +400,6 @@ class LCodeGen BASE_EMBEDDED {
   ZoneList<LEnvironment*> deoptimizations_;
   ZoneList<Deoptimizer::JumpTableEntry> deopt_jump_table_;
   ZoneList<Handle<Object> > deoptimization_literals_;
-  ZoneList<Handle<Map> > prototype_maps_;
-  ZoneList<Handle<Map> > transition_maps_;
   int inlined_function_count_;
   Scope* const scope_;
   Status status_;

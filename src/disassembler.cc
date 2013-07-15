@@ -115,8 +115,8 @@ static int DecodeIt(Isolate* isolate,
                     const V8NameConverter& converter,
                     byte* begin,
                     byte* end) {
-  NoHandleAllocation ha(isolate);
-  AssertNoAllocation no_alloc;
+  SealHandleScope shs(isolate);
+  DisallowHeapAllocation no_alloc;
   ExternalReferenceEncoder ref_encoder;
   Heap* heap = HEAP;
 
@@ -360,6 +360,8 @@ void Disassembler::Dump(FILE* f, byte* begin, byte* end) {}
 int Disassembler::Decode(Isolate* isolate, FILE* f, byte* begin, byte* end) {
   return 0;
 }
+
+
 void Disassembler::Decode(FILE* f, Code* code) {}
 
 #endif  // ENABLE_DISASSEMBLER

@@ -255,6 +255,17 @@ void PrettyPrinter::VisitForInStatement(ForInStatement* node) {
 }
 
 
+void PrettyPrinter::VisitForOfStatement(ForOfStatement* node) {
+  PrintLabels(node->labels());
+  Print("for (");
+  Visit(node->each());
+  Print(" of ");
+  Visit(node->iterable());
+  Print(") ");
+  Visit(node->body());
+}
+
+
 void PrettyPrinter::VisitTryCatchStatement(TryCatchStatement* node) {
   Print("try ");
   Visit(node->try_block());
@@ -304,7 +315,7 @@ void PrettyPrinter::VisitConditional(Conditional* node) {
 
 
 void PrettyPrinter::VisitLiteral(Literal* node) {
-  PrintLiteral(node->handle(), true);
+  PrintLiteral(node->value(), true);
 }
 
 
@@ -368,11 +379,11 @@ void PrettyPrinter::VisitThrow(Throw* node) {
 void PrettyPrinter::VisitProperty(Property* node) {
   Expression* key = node->key();
   Literal* literal = key->AsLiteral();
-  if (literal != NULL && literal->handle()->IsInternalizedString()) {
+  if (literal != NULL && literal->value()->IsInternalizedString()) {
     Print("(");
     Visit(node->obj());
     Print(").");
-    PrintLiteral(literal->handle(), false);
+    PrintLiteral(literal->value(), false);
   } else {
     Visit(node->obj());
     Print("[");
@@ -929,6 +940,14 @@ void AstPrinter::VisitForInStatement(ForInStatement* node) {
 }
 
 
+void AstPrinter::VisitForOfStatement(ForOfStatement* node) {
+  IndentedScope indent(this, "FOR OF");
+  PrintIndentedVisit("FOR", node->each());
+  PrintIndentedVisit("OF", node->iterable());
+  PrintIndentedVisit("BODY", node->body());
+}
+
+
 void AstPrinter::VisitTryCatchStatement(TryCatchStatement* node) {
   IndentedScope indent(this, "TRY CATCH");
   PrintIndentedVisit("TRY", node->try_block());
@@ -980,7 +999,7 @@ void AstPrinter::VisitConditional(Conditional* node) {
 
 // TODO(svenpanne) Start with IndentedScope.
 void AstPrinter::VisitLiteral(Literal* node) {
-  PrintLiteralIndented("LITERAL", node->handle(), true);
+  PrintLiteralIndented("LITERAL", node->value(), true);
 }
 
 
@@ -1083,8 +1102,8 @@ void AstPrinter::VisitProperty(Property* node) {
   IndentedScope indent(this, "PROPERTY");
   Visit(node->obj());
   Literal* literal = node->key()->AsLiteral();
-  if (literal != NULL && literal->handle()->IsInternalizedString()) {
-    PrintLiteralIndented("NAME", literal->handle(), false);
+  if (literal != NULL && literal->value()->IsInternalizedString()) {
+    PrintLiteralIndented("NAME", literal->value(), false);
   } else {
     PrintIndentedVisit("KEY", node->key());
   }

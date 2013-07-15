@@ -38,6 +38,24 @@
 namespace v8 {
 namespace internal {
 
+
+static inline double read_double_value(Address p) {
+#ifdef V8_HOST_CAN_READ_UNALIGNED
+  return Memory::double_at(p);
+#else  // V8_HOST_CAN_READ_UNALIGNED
+  // Prevent gcc from using load-double (mips ldc1) on (possibly)
+  // non-64-bit aligned address.
+  union conversion {
+    double d;
+    uint32_t u[2];
+  } c;
+  c.u[0] = *reinterpret_cast<uint32_t*>(p);
+  c.u[1] = *reinterpret_cast<uint32_t*>(p + 4);
+  return c.d;
+#endif  // V8_HOST_CAN_READ_UNALIGNED
+}
+
+
 class FrameDescription;
 class TranslationIterator;
 class DeoptimizingCodeListNode;
@@ -57,17 +75,17 @@ class HeapNumberMaterializationDescriptor BASE_EMBEDDED {
 };
 
 
-class ArgumentsObjectMaterializationDescriptor BASE_EMBEDDED {
+class ObjectMaterializationDescriptor BASE_EMBEDDED {
  public:
-  ArgumentsObjectMaterializationDescriptor(Address slot_address, int argc)
-      : slot_address_(slot_address), arguments_length_(argc) { }
+  ObjectMaterializationDescriptor(Address slot_address, int length)
+      : slot_address_(slot_address), object_length_(length) { }
 
   Address slot_address() const { return slot_address_; }
-  int arguments_length() const { return arguments_length_; }
+  int object_length() const { return object_length_; }
 
  private:
   Address slot_address_;
-  int arguments_length_;
+  int object_length_;
 };
 
 
@@ -351,6 +369,10 @@ class Deoptimizer : public Malloced {
   void DoComputeCompiledStubFrame(TranslationIterator* iterator,
                                   int frame_index);
 
+  void DoTranslateObject(TranslationIterator* iterator,
+                         int object_opcode,
+                         int field_index);
+
   enum DeoptimizerTranslatedValueType {
     TRANSLATED_VALUE_IS_NATIVE,
     TRANSLATED_VALUE_IS_TAGGED
@@ -376,8 +398,9 @@ class Deoptimizer : public Malloced {
 
   Object* ComputeLiteral(int index) const;
 
-  void AddArgumentsObject(intptr_t slot_address, int argc);
-  void AddArgumentsObjectValue(intptr_t value);
+  void AddObjectStart(intptr_t slot_address, int argc);
+  void AddObjectTaggedValue(intptr_t value);
+  void AddObjectDoubleValue(double value);
   void AddDoubleValue(intptr_t slot_address, double value);
 
   static void GenerateDeoptimizationEntries(
@@ -385,7 +408,7 @@ class Deoptimizer : public Malloced {
 
   // Weak handle callback for deoptimizing code objects.
   static void HandleWeakDeoptimizedCode(v8::Isolate* isolate,
-                                        v8::Persistent<v8::Value> obj,
+                                        v8::Persistent<v8::Value>* obj,
                                         void* data);
 
   // Deoptimize function assuming that function->next_function_link() points
@@ -428,9 +451,13 @@ class Deoptimizer : public Malloced {
   // Array of output frame descriptions.
   FrameDescription** output_;
 
-  List<Object*> deferred_arguments_objects_values_;
-  List<ArgumentsObjectMaterializationDescriptor> deferred_arguments_objects_;
+  List<Object*> deferred_objects_tagged_values_;
+  List<double> deferred_objects_double_values_;
+  List<ObjectMaterializationDescriptor> deferred_objects_;
   List<HeapNumberMaterializationDescriptor> deferred_heap_numbers_;
+#ifdef DEBUG
+  DisallowHeapAllocation* disallow_heap_allocation_;
+#endif  // DEBUG
 
   bool trace_;
 
@@ -476,19 +503,7 @@ class FrameDescription {
 
   double GetDoubleFrameSlot(unsigned offset) {
     intptr_t* ptr = GetFrameSlotPointer(offset);
-#if V8_TARGET_ARCH_MIPS
-    // Prevent gcc from using load-double (mips ldc1) on (possibly)
-    // non-64-bit aligned double. Uses two lwc1 instructions.
-    union conversion {
-      double d;
-      uint32_t u[2];
-    } c;
-    c.u[0] = *reinterpret_cast<uint32_t*>(ptr);
-    c.u[1] = *(reinterpret_cast<uint32_t*>(ptr) + 1);
-    return c.d;
-#else
-    return *reinterpret_cast<double*>(ptr);
-#endif
+    return read_double_value(reinterpret_cast<Address>(ptr));
   }
 
   void SetFrameSlot(unsigned offset, intptr_t value) {
@@ -689,6 +704,7 @@ class Translation BASE_EMBEDDED {
     SETTER_STUB_FRAME,
     ARGUMENTS_ADAPTOR_FRAME,
     COMPILED_STUB_FRAME,
+    ARGUMENTS_OBJECT,
     REGISTER,
     INT32_REGISTER,
     UINT32_REGISTER,
@@ -697,12 +713,7 @@ class Translation BASE_EMBEDDED {
     INT32_STACK_SLOT,
     UINT32_STACK_SLOT,
     DOUBLE_STACK_SLOT,
-    LITERAL,
-    ARGUMENTS_OBJECT,
-
-    // A prefix indicating that the next command is a duplicate of the one
-    // that follows it.
-    DUPLICATE
+    LITERAL
   };
 
   Translation(TranslationBuffer* buffer, int frame_count, int jsframe_count,
@@ -724,6 +735,7 @@ class Translation BASE_EMBEDDED {
   void BeginConstructStubFrame(int literal_id, unsigned height);
   void BeginGetterStubFrame(int literal_id);
   void BeginSetterStubFrame(int literal_id);
+  void BeginArgumentsObject(int args_length);
   void StoreRegister(Register reg);
   void StoreInt32Register(Register reg);
   void StoreUint32Register(Register reg);
@@ -734,7 +746,6 @@ class Translation BASE_EMBEDDED {
   void StoreDoubleStackSlot(int index);
   void StoreLiteral(int literal_id);
   void StoreArgumentsObject(bool args_known, int args_index, int args_length);
-  void MarkDuplicate();
 
   Zone* zone() const { return zone_; }
 
@@ -818,7 +829,7 @@ class SlotRef BASE_EMBEDDED {
       }
 
       case DOUBLE: {
-        double value = Memory::double_at(addr_);
+        double value = read_double_value(addr_);
         return isolate->factory()->NewNumber(value);
       }
 

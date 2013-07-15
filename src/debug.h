@@ -79,6 +79,14 @@ enum BreakLocatorType {
 };
 
 
+// The different types of breakpoint position alignments.
+// Must match Debug.BreakPositionAlignment in debug-debugger.js
+enum BreakPositionAlignment {
+  STATEMENT_ALIGNED = 0,
+  BREAK_POSITION_ALIGNED = 1
+};
+
+
 // Class for iterating through the break points in a function and changing
 // them.
 class BreakLocationIterator {
@@ -90,13 +98,15 @@ class BreakLocationIterator {
   void Next();
   void Next(int count);
   void FindBreakLocationFromAddress(Address pc);
-  void FindBreakLocationFromPosition(int position);
+  void FindBreakLocationFromPosition(int position,
+      BreakPositionAlignment alignment);
   void Reset();
   bool Done() const;
   void SetBreakPoint(Handle<Object> break_point_object);
   void ClearBreakPoint(Handle<Object> break_point_object);
   void SetOneShot();
   void ClearOneShot();
+  bool IsStepInLocation(Isolate* isolate);
   void PrepareStepIn(Isolate* isolate);
   bool IsExit() const;
   bool HasBreakPoint();
@@ -190,7 +200,7 @@ class ScriptCache : private HashMap {
 
   // Weak handle callback for scripts in the cache.
   static void HandleWeakScript(v8::Isolate* isolate,
-                               v8::Persistent<v8::Value> obj,
+                               v8::Persistent<v8::Value>* obj,
                                void* data);
 
   // List used during GC to temporarily store id's of collected scripts.
@@ -240,7 +250,8 @@ class Debug {
                      int* source_position);
   bool SetBreakPointForScript(Handle<Script> script,
                               Handle<Object> break_point_object,
-                              int* source_position);
+                              int* source_position,
+                              BreakPositionAlignment alignment);
   void ClearBreakPoint(Handle<Object> break_point_object);
   void ClearAllBreakPoints();
   void FloodWithOneShot(Handle<JSFunction> function);
@@ -283,7 +294,8 @@ class Debug {
   static Handle<Code> FindDebugBreak(Handle<Code> code, RelocInfo::Mode mode);
 
   static Handle<Object> GetSourceBreakLocations(
-      Handle<SharedFunctionInfo> shared);
+      Handle<SharedFunctionInfo> shared,
+      BreakPositionAlignment position_aligment);
 
   // Getter for the debug_context.
   inline Handle<Context> debug_context() { return debug_context_; }
@@ -387,7 +399,7 @@ class Debug {
 
   // Passed to MakeWeak.
   static void HandleWeakDebugInfo(v8::Isolate* isolate,
-                                  v8::Persistent<v8::Value> obj,
+                                  v8::Persistent<v8::Value>* obj,
                                   void* data);
 
   friend class Debugger;

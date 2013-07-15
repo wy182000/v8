@@ -39,6 +39,11 @@ namespace internal {
 
 class Factory {
  public:
+  // Allocate a new boxed value.
+  Handle<Box> NewBox(
+      Handle<Object> value,
+      PretenureFlag pretenure = NOT_TENURED);
+
   // Allocate a new uninitialized fixed array.
   Handle<FixedArray> NewFixedArray(
       int size,
@@ -147,6 +152,10 @@ class Factory {
   Handle<String> NewConsString(Handle<String> first,
                                Handle<String> second);
 
+  // Create a new sequential string containing the concatenation of the inputs.
+  Handle<String> NewFlatConcatString(Handle<String> first,
+                                     Handle<String> second);
+
   // Create a new string object which holds a substring of a string.
   Handle<String> NewSubString(Handle<String> str,
                               int begin,
@@ -230,8 +239,11 @@ class Factory {
       void* external_pointer,
       PretenureFlag pretenure = NOT_TENURED);
 
-  Handle<JSGlobalPropertyCell> NewJSGlobalPropertyCell(
-      Handle<Object> value);
+  Handle<Cell> NewCell(Handle<Object> value);
+
+  Handle<PropertyCell> NewPropertyCell(Handle<Object> value);
+
+  Handle<AllocationSite> NewAllocationSite();
 
   Handle<Map> NewMap(
       InstanceType type,
@@ -322,6 +334,8 @@ class Factory {
 
   Handle<JSTypedArray> NewJSTypedArray(ExternalArrayType type);
 
+  Handle<JSDataView> NewJSDataView();
+
   Handle<JSProxy> NewJSProxy(Handle<Object> handler, Handle<Object> prototype);
 
   // Change the type of the argument into a JS object/function and reinitialize.
@@ -369,33 +383,33 @@ class Factory {
 
   // Interface for creating error objects.
 
-  Handle<Object> NewError(const char* maker, const char* type,
+  Handle<Object> NewError(const char* maker, const char* message,
                           Handle<JSArray> args);
-  Handle<String> EmergencyNewError(const char* type, Handle<JSArray> args);
-  Handle<Object> NewError(const char* maker, const char* type,
+  Handle<String> EmergencyNewError(const char* message, Handle<JSArray> args);
+  Handle<Object> NewError(const char* maker, const char* message,
                           Vector< Handle<Object> > args);
-  Handle<Object> NewError(const char* type,
+  Handle<Object> NewError(const char* message,
                           Vector< Handle<Object> > args);
   Handle<Object> NewError(Handle<String> message);
   Handle<Object> NewError(const char* constructor,
                           Handle<String> message);
 
-  Handle<Object> NewTypeError(const char* type,
+  Handle<Object> NewTypeError(const char* message,
                               Vector< Handle<Object> > args);
   Handle<Object> NewTypeError(Handle<String> message);
 
-  Handle<Object> NewRangeError(const char* type,
+  Handle<Object> NewRangeError(const char* message,
                                Vector< Handle<Object> > args);
   Handle<Object> NewRangeError(Handle<String> message);
 
-  Handle<Object> NewSyntaxError(const char* type, Handle<JSArray> args);
+  Handle<Object> NewSyntaxError(const char* message, Handle<JSArray> args);
   Handle<Object> NewSyntaxError(Handle<String> message);
 
-  Handle<Object> NewReferenceError(const char* type,
+  Handle<Object> NewReferenceError(const char* message,
                                    Vector< Handle<Object> > args);
   Handle<Object> NewReferenceError(Handle<String> message);
 
-  Handle<Object> NewEvalError(const char* type,
+  Handle<Object> NewEvalError(const char* message,
                               Vector< Handle<Object> > args);
 
 
@@ -551,6 +565,82 @@ Handle<Object> Factory::NewNumberFromSize(size_t value,
   }
 }
 
+
+// Used to "safely" transition from pointer-based runtime code to Handle-based
+// runtime code. When a GC happens during the called Handle-based code, a
+// failure object is returned to the pointer-based code to cause it abort and
+// re-trigger a gc of it's own. Since this double-gc will cause the Handle-based
+// code to be called twice, it must be idempotent.
+class IdempotentPointerToHandleCodeTrampoline {
+ public:
+  explicit IdempotentPointerToHandleCodeTrampoline(Isolate* isolate)
+      : isolate_(isolate) {}
+
+  template<typename R>
+  MUST_USE_RESULT MaybeObject* Call(R (*function)()) {
+    int collections = isolate_->heap()->gc_count();
+    (*function)();
+    return (collections == isolate_->heap()->gc_count())
+        ? isolate_->heap()->true_value()
+        : reinterpret_cast<MaybeObject*>(Failure::RetryAfterGC());
+  }
+
+  template<typename R>
+  MUST_USE_RESULT MaybeObject* CallWithReturnValue(R (*function)()) {
+    int collections = isolate_->heap()->gc_count();
+    Object* result = (*function)();
+    return (collections == isolate_->heap()->gc_count())
+        ? result
+        : reinterpret_cast<MaybeObject*>(Failure::RetryAfterGC());
+  }
+
+  template<typename R, typename P1>
+  MUST_USE_RESULT MaybeObject* Call(R (*function)(P1), P1 p1) {
+    int collections = isolate_->heap()->gc_count();
+    (*function)(p1);
+    return (collections == isolate_->heap()->gc_count())
+        ? isolate_->heap()->true_value()
+        : reinterpret_cast<MaybeObject*>(Failure::RetryAfterGC());
+  }
+
+  template<typename R, typename P1>
+  MUST_USE_RESULT MaybeObject* CallWithReturnValue(
+      R (*function)(P1),
+      P1 p1) {
+    int collections = isolate_->heap()->gc_count();
+    Object* result = (*function)(p1);
+    return (collections == isolate_->heap()->gc_count())
+        ? result
+        : reinterpret_cast<MaybeObject*>(Failure::RetryAfterGC());
+  }
+
+  template<typename R, typename P1, typename P2>
+  MUST_USE_RESULT MaybeObject* Call(
+      R (*function)(P1, P2),
+      P1 p1,
+      P2 p2) {
+    int collections = isolate_->heap()->gc_count();
+    (*function)(p1, p2);
+    return (collections == isolate_->heap()->gc_count())
+        ? isolate_->heap()->true_value()
+        : reinterpret_cast<MaybeObject*>(Failure::RetryAfterGC());
+  }
+
+  template<typename R, typename P1, typename P2>
+  MUST_USE_RESULT MaybeObject* CallWithReturnValue(
+      R (*function)(P1, P2),
+      P1 p1,
+      P2 p2) {
+    int collections = isolate_->heap()->gc_count();
+    Object* result = (*function)(p1, p2);
+    return (collections == isolate_->heap()->gc_count())
+        ? result
+        : reinterpret_cast<MaybeObject*>(Failure::RetryAfterGC());
+  }
+
+ private:
+  Isolate* isolate_;
+};
 
 
 } }  // namespace v8::internal

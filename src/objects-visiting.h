@@ -88,10 +88,14 @@ class StaticVisitorBase : public AllStatic {
   V(Oddball)                  \
   V(Code)                     \
   V(Map)                      \
+  V(Cell)                     \
   V(PropertyCell)             \
   V(SharedFunctionInfo)       \
   V(JSFunction)               \
   V(JSWeakMap)                \
+  V(JSArrayBuffer)            \
+  V(JSTypedArray)             \
+  V(JSDataView)               \
   V(JSRegExp)
 
   // For data objects, JS objects and structs along with generic visitor which
@@ -333,6 +337,10 @@ class StaticNewSpaceVisitor : public StaticVisitorBase {
     return FreeSpace::cast(object)->Size();
   }
 
+  INLINE(static int VisitJSArrayBuffer(Map* map, HeapObject* object));
+  INLINE(static int VisitJSTypedArray(Map* map, HeapObject* object));
+  INLINE(static int VisitJSDataView(Map* map, HeapObject* object));
+
   class DataObjectVisitor {
    public:
     template<int object_size>
@@ -387,9 +395,10 @@ class StaticMarkingVisitor : public StaticVisitorBase {
     table_.GetVisitor(map)(map, obj);
   }
 
+  INLINE(static void VisitPropertyCell(Map* map, HeapObject* object));
   INLINE(static void VisitCodeEntry(Heap* heap, Address entry_address));
   INLINE(static void VisitEmbeddedPointer(Heap* heap, RelocInfo* rinfo));
-  INLINE(static void VisitGlobalPropertyCell(Heap* heap, RelocInfo* rinfo));
+  INLINE(static void VisitCell(Heap* heap, RelocInfo* rinfo));
   INLINE(static void VisitDebugTarget(Heap* heap, RelocInfo* rinfo));
   INLINE(static void VisitCodeTarget(Heap* heap, RelocInfo* rinfo));
   INLINE(static void VisitCodeAgeSequence(Heap* heap, RelocInfo* rinfo));
@@ -407,6 +416,9 @@ class StaticMarkingVisitor : public StaticVisitorBase {
   INLINE(static void VisitSharedFunctionInfo(Map* map, HeapObject* object));
   INLINE(static void VisitJSFunction(Map* map, HeapObject* object));
   INLINE(static void VisitJSRegExp(Map* map, HeapObject* object));
+  INLINE(static void VisitJSArrayBuffer(Map* map, HeapObject* object));
+  INLINE(static void VisitJSTypedArray(Map* map, HeapObject* object));
+  INLINE(static void VisitJSDataView(Map* map, HeapObject* object));
   INLINE(static void VisitNativeContext(Map* map, HeapObject* object));
 
   // Mark pointers in a Map and its TransitionArray together, possibly

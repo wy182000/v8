@@ -25,10 +25,6 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// TODO(dcarney): remove
-#define V8_ALLOW_ACCESS_TO_PERSISTENT_IMPLICIT
-#define V8_ALLOW_ACCESS_TO_PERSISTENT_ARROW
-
 #include "v8.h"
 
 #include "platform.h"
@@ -178,6 +174,7 @@ class ThreadIdValidationThread : public v8::internal::Thread {
   i::Thread* thread_to_start_;
   i::Semaphore* semaphore_;
 };
+
 
 TEST(ThreadIdValidation) {
   const int kNThreads = 100;

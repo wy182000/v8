@@ -61,6 +61,7 @@ void SetElementNonStrict(Handle<JSObject> object,
   USE(no_failure);
 }
 
+
 // A simple implementation of dynamic programming algorithm. It solves
 // the problem of finding the difference of 2 arrays. It uses a table of results
 // of subproblems. Each cell contains a number together with 2-bit flag
@@ -631,10 +632,10 @@ static Handle<Object> UnwrapJSValue(Handle<JSValue> jsValue) {
 // Wraps any object into a OpaqueReference, that will hide the object
 // from JavaScript.
 static Handle<JSValue> WrapInJSValue(Handle<Object> object) {
-  Handle<JSFunction> constructor =
-      Isolate::Current()->opaque_reference_function();
+  Isolate* isolate = Isolate::Current();
+  Handle<JSFunction> constructor = isolate->opaque_reference_function();
   Handle<JSValue> result =
-      Handle<JSValue>::cast(FACTORY->NewJSObject(constructor));
+      Handle<JSValue>::cast(isolate->factory()->NewJSObject(constructor));
   result->set_value(*object);
   return result;
 }
@@ -662,7 +663,8 @@ template<typename S>
 class JSArrayBasedStruct {
  public:
   static S Create() {
-    Handle<JSArray> array = FACTORY->NewJSArray(S::kSize_);
+    Factory* factory = Isolate::Current()->factory();
+    Handle<JSArray> array = factory->NewJSArray(S::kSize_);
     return S(array);
   }
   static S cast(Object* object) {
@@ -1069,7 +1071,7 @@ static void ReplaceCodeObject(Handle<Code> original,
 
   ASSERT(!heap->InNewSpace(*substitution));
 
-  AssertNoAllocation no_allocations_please;
+  DisallowHeapAllocation no_allocation;
 
   ReplacingVisitor visitor(*original, *substitution);
 
@@ -1144,7 +1146,7 @@ class LiteralFixer {
   template<typename Visitor>
   static void IterateJSFunctions(SharedFunctionInfo* shared_info,
                                  Visitor* visitor) {
-    AssertNoAllocation no_allocations_please;
+    DisallowHeapAllocation no_allocation;
 
     HeapIterator iterator(shared_info->GetHeap());
     for (HeapObject* obj = iterator.next(); obj != NULL;
@@ -1219,7 +1221,7 @@ static bool IsJSFunctionCode(Code* code) {
 
 // Returns true if an instance of candidate were inlined into function's code.
 static bool IsInlined(JSFunction* function, SharedFunctionInfo* candidate) {
-  AssertNoAllocation no_gc;
+  DisallowHeapAllocation no_gc;
 
   if (function->code()->kind() != Code::OPTIMIZED_FUNCTION) return false;
 
@@ -1257,7 +1259,7 @@ class DependentFunctionFilter : public OptimizedFunctionFilter {
 
 
 static void DeoptimizeDependentFunctions(SharedFunctionInfo* function_info) {
-  AssertNoAllocation no_allocation;
+  DisallowHeapAllocation no_allocation;
 
   DependentFunctionFilter filter(function_info);
   Deoptimizer::DeoptimizeAllFunctionsWith(function_info->GetIsolate(), &filter);
@@ -1293,7 +1295,7 @@ MaybeObject* LiveEdit::ReplaceFunctionCode(
   if (shared_info->debug_info()->IsDebugInfo()) {
     Handle<DebugInfo> debug_info(DebugInfo::cast(shared_info->debug_info()));
     Handle<Code> new_original_code =
-        FACTORY->CopyCode(compile_info_wrapper.GetFunctionCode());
+        isolate->factory()->CopyCode(compile_info_wrapper.GetFunctionCode());
     debug_info->set_original_code(*new_original_code);
   }
 
@@ -1455,17 +1457,19 @@ class RelocInfoBuffer {
   static const int kMaximalBufferSize = 512*MB;
 };
 
+
 // Patch positions in code (changes relocation info section) and possibly
 // returns new instance of code.
 static Handle<Code> PatchPositionsInCode(
     Handle<Code> code,
     Handle<JSArray> position_change_array) {
+  Isolate* isolate = code->GetIsolate();
 
   RelocInfoBuffer buffer_writer(code->relocation_size(),
                                 code->instruction_start());
 
   {
-    AssertNoAllocation no_allocations_please;
+    DisallowHeapAllocation no_allocation;
     for (RelocIterator it(*code); !it.done(); it.next()) {
       RelocInfo* rinfo = it.rinfo();
       if (RelocInfo::IsPosition(rinfo->rmode())) {
@@ -1494,7 +1498,7 @@ static Handle<Code> PatchPositionsInCode(
     // Relocation info section now has different size. We cannot simply
     // rewrite it inside code object. Instead we have to create a new
     // code object.
-    Handle<Code> result(FACTORY->CopyCode(code, buffer));
+    Handle<Code> result(isolate->factory()->CopyCode(code, buffer));
     return result;
   }
 }
@@ -1542,9 +1546,10 @@ MaybeObject* LiveEdit::PatchFunctionPositions(
 
 
 static Handle<Script> CreateScriptCopy(Handle<Script> original) {
-  Handle<String> original_source(String::cast(original->source()));
+  Isolate* isolate = original->GetIsolate();
 
-  Handle<Script> copy = FACTORY->NewScript(original_source);
+  Handle<String> original_source(String::cast(original->source()));
+  Handle<Script> copy = isolate->factory()->NewScript(original_source);
 
   copy->set_name(original->name());
   copy->set_line_offset(original->line_offset());
@@ -1616,8 +1621,7 @@ static bool CheckActivation(Handle<JSArray> shared_info_array,
                             LiveEdit::FunctionPatchabilityStatus status) {
   if (!frame->is_java_script()) return false;
 
-  Handle<JSFunction> function(
-      JSFunction::cast(JavaScriptFrame::cast(frame)->function()));
+  Handle<JSFunction> function(JavaScriptFrame::cast(frame)->function());
 
   Isolate* isolate = shared_info_array->GetIsolate();
   int len = GetArrayLength(shared_info_array);
@@ -1826,14 +1830,15 @@ class MultipleFunctionTarget {
   Handle<JSArray> m_result;
 };
 
+
 // Drops all call frame matched by target and all frames above them.
 template<typename TARGET>
 static const char* DropActivationsInActiveThreadImpl(
-    TARGET& target, bool do_drop, Zone* zone) {
+    TARGET& target, bool do_drop) {
   Isolate* isolate = Isolate::Current();
   Debug* debug = isolate->debug();
-  ZoneScope scope(zone, DELETE_ON_EXIT);
-  Vector<StackFrame*> frames = CreateStackMap(isolate, zone);
+  Zone zone(isolate);
+  Vector<StackFrame*> frames = CreateStackMap(isolate, &zone);
 
 
   int top_frame_index = -1;
@@ -1922,15 +1927,15 @@ static const char* DropActivationsInActiveThreadImpl(
   return NULL;
 }
 
+
 // Fills result array with statuses of functions. Modifies the stack
 // removing all listed function if possible and if do_drop is true.
 static const char* DropActivationsInActiveThread(
-    Handle<JSArray> shared_info_array, Handle<JSArray> result, bool do_drop,
-    Zone* zone) {
+    Handle<JSArray> shared_info_array, Handle<JSArray> result, bool do_drop) {
   MultipleFunctionTarget target(shared_info_array, result);
 
   const char* message =
-      DropActivationsInActiveThreadImpl(target, do_drop, zone);
+      DropActivationsInActiveThreadImpl(target, do_drop);
   if (message) {
     return message;
   }
@@ -1977,7 +1982,7 @@ class InactiveThreadActivationsChecker : public ThreadVisitor {
 
 
 Handle<JSArray> LiveEdit::CheckAndDropActivations(
-    Handle<JSArray> shared_info_array, bool do_drop, Zone* zone) {
+    Handle<JSArray> shared_info_array, bool do_drop) {
   Isolate* isolate = shared_info_array->GetIsolate();
   int len = GetArrayLength(shared_info_array);
 
@@ -2003,11 +2008,11 @@ Handle<JSArray> LiveEdit::CheckAndDropActivations(
 
   // Try to drop activations from the current stack.
   const char* error_message =
-      DropActivationsInActiveThread(shared_info_array, result, do_drop, zone);
+      DropActivationsInActiveThread(shared_info_array, result, do_drop);
   if (error_message != NULL) {
     // Add error message as an array extra element.
     Vector<const char> vector_message(error_message, StrLength(error_message));
-    Handle<String> str = FACTORY->NewStringFromAscii(vector_message);
+    Handle<String> str = isolate->factory()->NewStringFromAscii(vector_message);
     SetElementNonStrict(result, len, str);
   }
   return result;
@@ -2044,10 +2049,10 @@ class SingleFrameTarget {
 
 // Finds a drops required frame and all frames above.
 // Returns error message or NULL.
-const char* LiveEdit::RestartFrame(JavaScriptFrame* frame, Zone* zone) {
+const char* LiveEdit::RestartFrame(JavaScriptFrame* frame) {
   SingleFrameTarget target(frame);
 
-  const char* result = DropActivationsInActiveThreadImpl(target, true, zone);
+  const char* result = DropActivationsInActiveThreadImpl(target, true);
   if (result != NULL) {
     return result;
   }

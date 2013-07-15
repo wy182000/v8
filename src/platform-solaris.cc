@@ -38,7 +38,6 @@
 #include <ucontext.h>  // walkstack(), getcontext()
 #include <dlfcn.h>     // dladdr
 #include <pthread.h>
-#include <sched.h>  // for sched_yield
 #include <semaphore.h>
 #include <time.h>
 #include <sys/time.h>  // gettimeofday(), timeradd()
@@ -108,12 +107,6 @@ uint64_t OS::CpuFeaturesImpliedByPlatform() {
 int OS::ActivationFrameAlignment() {
   // GCC generates code that requires 16 byte alignment such as movdqa.
   return Max(STACK_ALIGN, 16);
-}
-
-
-void OS::ReleaseStore(volatile AtomicWord* ptr, AtomicWord value) {
-  __asm__ __volatile__("" : : : "memory");
-  *ptr = value;
 }
 
 
@@ -542,46 +535,6 @@ void* Thread::GetThreadLocal(LocalStorageKey key) {
 void Thread::SetThreadLocal(LocalStorageKey key, void* value) {
   pthread_key_t pthread_key = static_cast<pthread_key_t>(key);
   pthread_setspecific(pthread_key, value);
-}
-
-
-void Thread::YieldCPU() {
-  sched_yield();
-}
-
-
-class SolarisMutex : public Mutex {
- public:
-  SolarisMutex() {
-    pthread_mutexattr_t attr;
-    pthread_mutexattr_init(&attr);
-    pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
-    pthread_mutex_init(&mutex_, &attr);
-  }
-
-  ~SolarisMutex() { pthread_mutex_destroy(&mutex_); }
-
-  int Lock() { return pthread_mutex_lock(&mutex_); }
-
-  int Unlock() { return pthread_mutex_unlock(&mutex_); }
-
-  virtual bool TryLock() {
-    int result = pthread_mutex_trylock(&mutex_);
-    // Return false if the lock is busy and locking failed.
-    if (result == EBUSY) {
-      return false;
-    }
-    ASSERT(result == 0);  // Verify no other errors.
-    return true;
-  }
-
- private:
-  pthread_mutex_t mutex_;
-};
-
-
-Mutex* OS::CreateMutex() {
-  return new SolarisMutex();
 }
 
 

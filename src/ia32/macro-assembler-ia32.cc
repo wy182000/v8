@@ -27,10 +27,11 @@
 
 #include "v8.h"
 
-#if defined(V8_TARGET_ARCH_IA32)
+#if V8_TARGET_ARCH_IA32
 
 #include "bootstrapper.h"
 #include "codegen.h"
+#include "cpu-profiler.h"
 #include "debug.h"
 #include "runtime.h"
 #include "serialize.h"
@@ -840,6 +841,7 @@ void MacroAssembler::LeaveExitFrame(bool save_doubles) {
 
   LeaveExitFrameEpilogue();
 }
+
 
 void MacroAssembler::LeaveExitFrameEpilogue() {
   // Restore current context from top and clear it in debug mode.
@@ -1973,6 +1975,8 @@ void MacroAssembler::PrepareCallApiFunction(int argc, bool returns_handle) {
 
 
 void MacroAssembler::CallApiFunctionAndReturn(Address function_address,
+                                              Address thunk_address,
+                                              Operand thunk_last_arg,
                                               int stack_space,
                                               bool returns_handle,
                                               int return_value_offset) {
@@ -1998,8 +2002,26 @@ void MacroAssembler::CallApiFunctionAndReturn(Address function_address,
     PopSafepointRegisters();
   }
 
+
+  Label profiler_disabled;
+  Label end_profiler_check;
+  bool* is_profiling_flag =
+      isolate()->cpu_profiler()->is_profiling_address();
+  STATIC_ASSERT(sizeof(*is_profiling_flag) == 1);
+  mov(eax, Immediate(reinterpret_cast<Address>(is_profiling_flag)));
+  cmpb(Operand(eax, 0), 0);
+  j(zero, &profiler_disabled);
+
+  // Additional parameter is the address of the actual getter function.
+  mov(thunk_last_arg, Immediate(function_address));
+  // Call the api function.
+  call(thunk_address, RelocInfo::RUNTIME_ENTRY);
+  jmp(&end_profiler_check);
+
+  bind(&profiler_disabled);
   // Call the api function.
   call(function_address, RelocInfo::RUNTIME_ENTRY);
+  bind(&end_profiler_check);
 
   if (FLAG_log_timer_events) {
     FrameScope frame(this, StackFrame::MANUAL);
@@ -2493,23 +2515,32 @@ int MacroAssembler::SafepointRegisterStackIndex(int reg_code) {
 
 void MacroAssembler::LoadHeapObject(Register result,
                                     Handle<HeapObject> object) {
-  ALLOW_HANDLE_DEREF(isolate(), "embedding raw address");
+  AllowDeferredHandleDereference embedding_raw_address;
   if (isolate()->heap()->InNewSpace(*object)) {
-    Handle<JSGlobalPropertyCell> cell =
-        isolate()->factory()->NewJSGlobalPropertyCell(object);
-    mov(result, Operand::Cell(cell));
+    Handle<Cell> cell = isolate()->factory()->NewCell(object);
+    mov(result, Operand::ForCell(cell));
   } else {
     mov(result, object);
   }
 }
 
 
-void MacroAssembler::PushHeapObject(Handle<HeapObject> object) {
-  ALLOW_HANDLE_DEREF(isolate(), "using raw address");
+void MacroAssembler::CmpHeapObject(Register reg, Handle<HeapObject> object) {
+  AllowDeferredHandleDereference using_raw_address;
   if (isolate()->heap()->InNewSpace(*object)) {
-    Handle<JSGlobalPropertyCell> cell =
-        isolate()->factory()->NewJSGlobalPropertyCell(object);
-    push(Operand::Cell(cell));
+    Handle<Cell> cell = isolate()->factory()->NewCell(object);
+    cmp(reg, Operand::ForCell(cell));
+  } else {
+    cmp(reg, object);
+  }
+}
+
+
+void MacroAssembler::PushHeapObject(Handle<HeapObject> object) {
+  AllowDeferredHandleDereference using_raw_address;
+  if (isolate()->heap()->InNewSpace(*object)) {
+    Handle<Cell> cell = isolate()->factory()->NewCell(object);
+    push(Operand::ForCell(cell));
   } else {
     Push(object);
   }
@@ -2778,6 +2809,17 @@ void MacroAssembler::JumpIfNotBothSequentialAsciiStrings(Register object1,
 }
 
 
+void MacroAssembler::JumpIfNotUniqueName(Operand operand,
+                                         Label* not_unique_name,
+                                         Label::Distance distance) {
+  STATIC_ASSERT(((SYMBOL_TYPE - 1) & kIsInternalizedMask) == kInternalizedTag);
+  cmp(operand, Immediate(kInternalizedTag));
+  j(less, not_unique_name, distance);
+  cmp(operand, Immediate(SYMBOL_TYPE));
+  j(greater, not_unique_name, distance);
+}
+
+
 void MacroAssembler::PrepareCallCFunction(int num_arguments, Register scratch) {
   int frame_alignment = OS::ActivationFrameAlignment();
   if (frame_alignment != 0) {
@@ -3015,7 +3057,7 @@ void MacroAssembler::EnsureNotWhite(
 
   // Check for heap-number
   mov(map, FieldOperand(value, HeapObject::kMapOffset));
-  cmp(map, FACTORY->heap_number_map());
+  cmp(map, isolate()->factory()->heap_number_map());
   j(not_equal, &not_heap_number, Label::kNear);
   mov(length, Immediate(HeapNumber::kSize));
   jmp(&is_data_object, Label::kNear);

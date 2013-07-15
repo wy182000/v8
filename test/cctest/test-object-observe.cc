@@ -54,10 +54,11 @@ class HarmonyIsolate {
 };
 }
 
+
 TEST(PerIsolateState) {
   HarmonyIsolate isolate;
   HandleScope scope(isolate.GetIsolate());
-  v8::LocalContext context1;
+  LocalContext context1;
   CompileRun(
       "var count = 0;"
       "var calls = 0;"
@@ -70,20 +71,20 @@ TEST(PerIsolateState) {
       "(function() { obj.foo = 'bar'; })");
   Handle<Value> notify_fun2;
   {
-    v8::LocalContext context2;
+    LocalContext context2;
     context2->Global()->Set(String::New("obj"), obj);
     notify_fun2 = CompileRun(
         "(function() { obj.foo = 'baz'; })");
   }
   Handle<Value> notify_fun3;
   {
-    v8::LocalContext context3;
+    LocalContext context3;
     context3->Global()->Set(String::New("obj"), obj);
     notify_fun3 = CompileRun(
         "(function() { obj.foo = 'bat'; })");
   }
   {
-    v8::LocalContext context4;
+    LocalContext context4;
     context4->Global()->Set(String::New("observer"), observer);
     context4->Global()->Set(String::New("fun1"), notify_fun1);
     context4->Global()->Set(String::New("fun2"), notify_fun2);
@@ -94,10 +95,11 @@ TEST(PerIsolateState) {
   CHECK_EQ(3, CompileRun("count")->Int32Value());
 }
 
+
 TEST(EndOfMicrotaskDelivery) {
   HarmonyIsolate isolate;
   HandleScope scope(isolate.GetIsolate());
-  v8::LocalContext context;
+  LocalContext context;
   CompileRun(
       "var obj = {};"
       "var count = 0;"
@@ -107,10 +109,11 @@ TEST(EndOfMicrotaskDelivery) {
   CHECK_EQ(1, CompileRun("count")->Int32Value());
 }
 
+
 TEST(DeliveryOrdering) {
   HarmonyIsolate isolate;
   HandleScope scope(isolate.GetIsolate());
-  v8::LocalContext context;
+  LocalContext context;
   CompileRun(
       "var obj1 = {};"
       "var obj2 = {};"
@@ -138,10 +141,11 @@ TEST(DeliveryOrdering) {
   CHECK_EQ(3, CompileRun("ordering[2]")->Int32Value());
 }
 
+
 TEST(DeliveryOrderingReentrant) {
   HarmonyIsolate isolate;
   HandleScope scope(isolate.GetIsolate());
-  v8::LocalContext context;
+  LocalContext context;
   CompileRun(
       "var obj = {};"
       "var reentered = false;"
@@ -169,10 +173,11 @@ TEST(DeliveryOrderingReentrant) {
   CHECK_EQ(2, CompileRun("ordering[1]")->Int32Value());
 }
 
+
 TEST(DeliveryOrderingDeliverChangeRecords) {
   HarmonyIsolate isolate;
   HandleScope scope(isolate.GetIsolate());
-  v8::LocalContext context;
+  LocalContext context;
   CompileRun(
       "var obj = {};"
       "var ordering = [];"
@@ -193,18 +198,19 @@ TEST(DeliveryOrderingDeliverChangeRecords) {
   CHECK_EQ(2, CompileRun("ordering[3]")->Int32Value());
 }
 
+
 TEST(ObjectHashTableGrowth) {
   HarmonyIsolate isolate;
   HandleScope scope(isolate.GetIsolate());
   // Initializing this context sets up initial hash tables.
-  v8::LocalContext context;
+  LocalContext context;
   Handle<Value> obj = CompileRun("obj = {};");
   Handle<Value> observer = CompileRun(
       "var ran = false;"
       "(function() { ran = true })");
   {
     // As does initializing this context.
-    v8::LocalContext context2;
+    LocalContext context2;
     context2->Global()->Set(String::New("obj"), obj);
     context2->Global()->Set(String::New("observer"), observer);
     CompileRun(
@@ -222,9 +228,10 @@ TEST(ObjectHashTableGrowth) {
   CHECK(CompileRun("ran")->BooleanValue());
 }
 
+
 TEST(GlobalObjectObservation) {
   HarmonyIsolate isolate;
-  v8::LocalContext context;
+  LocalContext context;
   HandleScope scope(isolate.GetIsolate());
   Handle<Object> global_proxy = context->Global();
   Handle<Object> inner_global = global_proxy->GetPrototype().As<Object>();
@@ -256,7 +263,7 @@ TEST(GlobalObjectObservation) {
   // to the old context.
   context->DetachGlobal();
   {
-    v8::LocalContext context2;
+    LocalContext context2;
     context2->DetachGlobal();
     context2->ReattachGlobal(global_proxy);
     CompileRun(
@@ -271,7 +278,7 @@ TEST(GlobalObjectObservation) {
   // Attaching by passing to Context::New
   {
     // Delegates to Context::New
-    v8::LocalContext context3(NULL, Handle<ObjectTemplate>(), global_proxy);
+    LocalContext context3(NULL, Handle<ObjectTemplate>(), global_proxy);
     CompileRun(
         "var records3 = [];"
         "Object.observe(this, function(r) { [].push.apply(records3, r) });"
@@ -289,6 +296,7 @@ struct RecordExpectation {
   const char* name;
   Handle<Value> old_value;
 };
+
 
 // TODO(adamk): Use this helper elsewhere in this file.
 static void ExpectRecords(Handle<Value> records,
@@ -320,7 +328,7 @@ static void ExpectRecords(Handle<Value> records,
 TEST(APITestBasicMutation) {
   HarmonyIsolate isolate;
   HandleScope scope(isolate.GetIsolate());
-  v8::LocalContext context;
+  LocalContext context;
   Handle<Object> obj = Handle<Object>::Cast(CompileRun(
       "var records = [];"
       "var obj = {};"
@@ -360,10 +368,11 @@ TEST(APITestBasicMutation) {
   EXPECT_RECORDS(CompileRun("records"), expected_records);
 }
 
+
 TEST(HiddenPrototypeObservation) {
   HarmonyIsolate isolate;
   HandleScope scope(isolate.GetIsolate());
-  v8::LocalContext context;
+  LocalContext context;
   Handle<FunctionTemplate> tmpl = FunctionTemplate::New();
   tmpl->SetHiddenPrototype(true);
   tmpl->InstanceTemplate()->Set(String::New("foo"), Number::New(75));
@@ -412,13 +421,14 @@ static int NumberOfElements(i::Handle<i::JSWeakMap> map) {
 TEST(ObservationWeakMap) {
   HarmonyIsolate isolate;
   HandleScope scope(isolate.GetIsolate());
-  v8::LocalContext context;
+  LocalContext context;
   CompileRun(
       "var obj = {};"
       "Object.observe(obj, function(){});"
       "Object.getNotifier(obj);"
       "obj = null;");
-  i::Handle<i::JSObject> observation_state = FACTORY->observation_state();
+  i::Handle<i::JSObject> observation_state =
+      i::Isolate::Current()->factory()->observation_state();
   i::Handle<i::JSWeakMap> observerInfoMap =
       i::Handle<i::JSWeakMap>::cast(
           i::GetProperty(observation_state, "observerInfoMap"));

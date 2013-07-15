@@ -32,10 +32,12 @@
 #include "bootstrapper.h"
 #include "codegen.h"
 #include "compilation-cache.h"
+#include "cpu-profiler.h"
 #include "debug.h"
 #include "deoptimizer.h"
 #include "full-codegen.h"
 #include "gdb-jit.h"
+#include "typing.h"
 #include "hydrogen.h"
 #include "isolate-inl.h"
 #include "lithium.h"
@@ -52,7 +54,8 @@ namespace v8 {
 namespace internal {
 
 
-CompilationInfo::CompilationInfo(Handle<Script> script, Zone* zone)
+CompilationInfo::CompilationInfo(Handle<Script> script,
+                                 Zone* zone)
     : flags_(LanguageModeField::encode(CLASSIC_MODE)),
       script_(script),
       osr_ast_id_(BailoutId::None()) {
@@ -70,7 +73,8 @@ CompilationInfo::CompilationInfo(Handle<SharedFunctionInfo> shared_info,
 }
 
 
-CompilationInfo::CompilationInfo(Handle<JSFunction> closure, Zone* zone)
+CompilationInfo::CompilationInfo(Handle<JSFunction> closure,
+                                 Zone* zone)
     : flags_(LanguageModeField::encode(CLASSIC_MODE) | IsLazy::encode(true)),
       closure_(closure),
       shared_info_(Handle<SharedFunctionInfo>(closure->shared())),
@@ -82,7 +86,8 @@ CompilationInfo::CompilationInfo(Handle<JSFunction> closure, Zone* zone)
 
 
 CompilationInfo::CompilationInfo(HydrogenCodeStub* stub,
-                                 Isolate* isolate, Zone* zone)
+                                 Isolate* isolate,
+                                 Zone* zone)
     : flags_(LanguageModeField::encode(CLASSIC_MODE) |
              IsLazy::encode(true)),
       osr_ast_id_(BailoutId::None()) {
@@ -91,7 +96,9 @@ CompilationInfo::CompilationInfo(HydrogenCodeStub* stub,
 }
 
 
-void CompilationInfo::Initialize(Isolate* isolate, Mode mode, Zone* zone) {
+void CompilationInfo::Initialize(Isolate* isolate,
+                                 Mode mode,
+                                 Zone* zone) {
   isolate_ = isolate;
   function_ = NULL;
   scope_ = NULL;
@@ -105,6 +112,9 @@ void CompilationInfo::Initialize(Isolate* isolate, Mode mode, Zone* zone) {
   opt_count_ = shared_info().is_null() ? 0 : shared_info()->opt_count();
   no_frame_ranges_ = isolate->cpu_profiler()->is_profiling()
                    ? new List<OffsetRange>(2) : NULL;
+  for (int i = 0; i < DependentCode::kGroupCount; i++) {
+    dependencies_[i] = NULL;
+  }
   if (mode == STUB) {
     mode_ = STUB;
     return;
@@ -124,6 +134,47 @@ void CompilationInfo::Initialize(Isolate* isolate, Mode mode, Zone* zone) {
 CompilationInfo::~CompilationInfo() {
   delete deferred_handles_;
   delete no_frame_ranges_;
+#ifdef DEBUG
+  // Check that no dependent maps have been added or added dependent maps have
+  // been rolled back or committed.
+  for (int i = 0; i < DependentCode::kGroupCount; i++) {
+    ASSERT_EQ(NULL, dependencies_[i]);
+  }
+#endif  // DEBUG
+}
+
+
+void CompilationInfo::CommitDependencies(Handle<Code> code) {
+  for (int i = 0; i < DependentCode::kGroupCount; i++) {
+    ZoneList<Handle<HeapObject> >* group_objects = dependencies_[i];
+    if (group_objects == NULL) continue;
+    ASSERT(!object_wrapper_.is_null());
+    for (int j = 0; j < group_objects->length(); j++) {
+      DependentCode::DependencyGroup group =
+          static_cast<DependentCode::DependencyGroup>(i);
+      DependentCode* dependent_code =
+          DependentCode::ForObject(group_objects->at(j), group);
+      dependent_code->UpdateToFinishedCode(group, this, *code);
+    }
+    dependencies_[i] = NULL;  // Zone-allocated, no need to delete.
+  }
+}
+
+
+void CompilationInfo::RollbackDependencies() {
+  // Unregister from all dependent maps if not yet committed.
+  for (int i = 0; i < DependentCode::kGroupCount; i++) {
+    ZoneList<Handle<HeapObject> >* group_objects = dependencies_[i];
+    if (group_objects == NULL) continue;
+    for (int j = 0; j < group_objects->length(); j++) {
+      DependentCode::DependencyGroup group =
+          static_cast<DependentCode::DependencyGroup>(i);
+      DependentCode* dependent_code =
+          DependentCode::ForObject(group_objects->at(j), group);
+      dependent_code->RemoveCompilationInfo(group, this);
+    }
+    dependencies_[i] = NULL;  // Zone-allocated, no need to delete.
+  }
 }
 
 
@@ -328,7 +379,10 @@ OptimizingCompiler::Status OptimizingCompiler::CreateGraph() {
   // performance of the hydrogen-based compiler.
   bool should_recompile = !info()->shared_info()->has_deoptimization_support();
   if (should_recompile || FLAG_hydrogen_stats) {
-    HPhase phase(HPhase::kFullCodeGen, isolate());
+    int64_t start_ticks = 0;
+    if (FLAG_hydrogen_stats) {
+      start_ticks = OS::Ticks();
+    }
     CompilationInfoWithZone unoptimized(info()->shared_info());
     // Note that we use the same AST that we will use for generating the
     // optimized code.
@@ -344,6 +398,10 @@ OptimizingCompiler::Status OptimizingCompiler::CreateGraph() {
       // The existing unoptimized code was replaced with the new one.
       Compiler::RecordFunctionCompilation(
           Logger::LAZY_COMPILE_TAG, &unoptimized, shared);
+    }
+    if (FLAG_hydrogen_stats) {
+      int64_t ticks = OS::Ticks() - start_ticks;
+      isolate()->GetHStatistics()->IncrementFullCodeGen(ticks);
     }
   }
 
@@ -361,11 +419,11 @@ OptimizingCompiler::Status OptimizingCompiler::CreateGraph() {
     PrintF("Compiling method %s using hydrogen\n", *name->ToCString());
     isolate()->GetHTracer()->TraceCompilation(info());
   }
-  Handle<Context> native_context(
-      info()->closure()->context()->native_context());
-  oracle_ = new(info()->zone()) TypeFeedbackOracle(
-      code, native_context, isolate(), info()->zone());
-  graph_builder_ = new(info()->zone()) HOptimizedGraphBuilder(info(), oracle_);
+
+  // Type-check the function.
+  AstTyper::Run(info());
+
+  graph_builder_ = new(info()->zone()) HOptimizedGraphBuilder(info());
 
   Timer t(this, &time_taken_to_create_graph_);
   graph_ = graph_builder_->CreateGraph();
@@ -391,10 +449,11 @@ OptimizingCompiler::Status OptimizingCompiler::CreateGraph() {
   return SetLastStatus(SUCCEEDED);
 }
 
+
 OptimizingCompiler::Status OptimizingCompiler::OptimizeGraph() {
-  AssertNoAllocation no_gc;
-  NoHandleAllocation no_handles(isolate());
-  HandleDereferenceGuard no_deref(isolate(), HandleDereferenceGuard::DISALLOW);
+  DisallowHeapAllocation no_allocation;
+  DisallowHandleAllocation no_handles;
+  DisallowHandleDereference no_deref;
 
   ASSERT(last_status() == SUCCEEDED);
   Timer t(this, &time_taken_to_optimize_);
@@ -423,8 +482,7 @@ OptimizingCompiler::Status OptimizingCompiler::GenerateAndInstallCode() {
     // graph creation.  To make sure that we don't encounter inconsistencies
     // between graph creation and code generation, we disallow accessing
     // objects through deferred handles during the latter, with exceptions.
-    HandleDereferenceGuard no_deref_deferred(
-        isolate(), HandleDereferenceGuard::DISALLOW_DEFERRED);
+    DisallowDeferredHandleDereference no_deferred_handle_deref;
     Handle<Code> optimized_code = chunk_->Codegen();
     if (optimized_code.is_null()) {
       info()->set_bailout_reason("code generation failed");
@@ -490,7 +548,6 @@ static bool DebuggerWantsEagerCompilation(CompilationInfo* info,
 
 static Handle<SharedFunctionInfo> MakeFunctionInfo(CompilationInfo* info) {
   Isolate* isolate = info->isolate();
-  ZoneScope zone_scope(info->zone(), DELETE_ON_EXIT);
   PostponeInterruptsScope postpone(isolate);
 
   ASSERT(!isolate->native_context().is_null());
@@ -508,8 +565,7 @@ static Handle<SharedFunctionInfo> MakeFunctionInfo(CompilationInfo* info) {
     if (info->is_eval()) {
       StackTraceFrameIterator it(isolate);
       if (!it.done()) {
-        script->set_eval_from_shared(
-            JSFunction::cast(it.frame()->function())->shared());
+        script->set_eval_from_shared(it.frame()->function()->shared());
         Code* code = it.frame()->LookupCode();
         int offset = static_cast<int>(
             it.frame()->pc() - code->instruction_start());
@@ -649,7 +705,7 @@ Handle<SharedFunctionInfo> Compiler::Compile(Handle<String> source,
     // in that case too.
 
     // Create a script object describing the script to be compiled.
-    Handle<Script> script = FACTORY->NewScript(source);
+    Handle<Script> script = isolate->factory()->NewScript(source);
     if (natives == NATIVES_CODE) {
       script->set_type(Smi::FromInt(Script::TYPE_NATIVE));
     }
@@ -771,16 +827,8 @@ static bool InstallFullCode(CompilationInfo* info) {
   int expected = lit->expected_property_count();
   SetExpectedNofPropertiesFromEstimate(shared, expected);
 
-  // Set the optimization hints after performing lazy compilation, as
-  // these are not set when the function is set up as a lazily
-  // compiled function.
-  shared->SetThisPropertyAssignmentsInfo(
-      lit->has_only_simple_this_property_assignments(),
-      *lit->this_property_assignments());
-
   // Check the function has compiled code.
   ASSERT(shared->is_compiled());
-  shared->set_code_age(0);
   shared->set_dont_optimize(lit->flags()->Contains(kDontOptimize));
   shared->set_dont_inline(lit->flags()->Contains(kDontInline));
   shared->set_ast_node_count(lit->ast_node_count());
@@ -861,8 +909,6 @@ static bool InstallCodeFromOptimizedCodeMap(CompilationInfo* info) {
 
 bool Compiler::CompileLazy(CompilationInfo* info) {
   Isolate* isolate = info->isolate();
-
-  ZoneScope zone_scope(info->zone(), DELETE_ON_EXIT);
 
   // The VM is in the COMPILER state until exiting this function.
   VMState<COMPILER> state(isolate);
@@ -957,9 +1003,6 @@ void Compiler::RecompileParallel(Handle<JSFunction> closure) {
         if (status == OptimizingCompiler::SUCCEEDED) {
           info.Detach();
           shared->code()->set_profiler_ticks(0);
-          // Do a scavenge to put off the next scavenge as far as possible.
-          // This may ease the issue that GVN blocks the next scavenge.
-          isolate->heap()->CollectGarbage(NEW_SPACE, "parallel recompile");
           isolate->optimizing_compiler_thread()->QueueForOptimization(compiler);
         } else if (status == OptimizingCompiler::BAILED_OUT) {
           isolate->clear_pending_exception();
@@ -992,7 +1035,7 @@ void Compiler::InstallOptimizedCode(OptimizingCompiler* optimizing_compiler) {
   // The function may have already been optimized by OSR.  Simply continue.
   // Except when OSR already disabled optimization for some reason.
   if (info->shared_info()->optimization_disabled()) {
-    info->SetCode(Handle<Code>(info->shared_info()->code()));
+    info->AbortOptimization();
     InstallFullCode(*info);
     if (FLAG_trace_parallel_recompilation) {
       PrintF("  ** aborting optimization for ");
@@ -1010,9 +1053,14 @@ void Compiler::InstallOptimizedCode(OptimizingCompiler* optimizing_compiler) {
   // If crankshaft succeeded, install the optimized code else install
   // the unoptimized code.
   OptimizingCompiler::Status status = optimizing_compiler->last_status();
-  if (status != OptimizingCompiler::SUCCEEDED) {
-    optimizing_compiler->info()->set_bailout_reason(
-        "failed/bailed out last time");
+  if (info->HasAbortedDueToDependencyChange()) {
+    info->set_bailout_reason("bailed out due to dependent map");
+    status = optimizing_compiler->AbortOptimization();
+  } else if (status != OptimizingCompiler::SUCCEEDED) {
+    info->set_bailout_reason("failed/bailed out last time");
+    status = optimizing_compiler->AbortOptimization();
+  } else if (isolate->DebuggerHasBreakPoints()) {
+    info->set_bailout_reason("debugger is active");
     status = optimizing_compiler->AbortOptimization();
   } else {
     status = optimizing_compiler->GenerateAndInstallCode();
@@ -1054,6 +1102,7 @@ Handle<SharedFunctionInfo> Compiler::BuildFunctionInfo(FunctionLiteral* literal,
   info.SetLanguageMode(literal->scope()->language_mode());
 
   Isolate* isolate = info.isolate();
+  Factory* factory = isolate->factory();
   LiveEditFunctionTracker live_edit_tracker(isolate, literal);
   // Determine if the function can be lazily compiled. This is necessary to
   // allow some of our builtin JS files to be lazily compiled. These
@@ -1083,7 +1132,7 @@ Handle<SharedFunctionInfo> Compiler::BuildFunctionInfo(FunctionLiteral* literal,
 
   // Create a shared function info object.
   Handle<SharedFunctionInfo> result =
-      FACTORY->NewSharedFunctionInfo(literal->name(),
+      factory->NewSharedFunctionInfo(literal->name(),
                                      literal->materialized_literal_count(),
                                      literal->is_generator(),
                                      info.code(),
@@ -1120,9 +1169,6 @@ void Compiler::SetFunctionInfo(Handle<SharedFunctionInfo> function_info,
   function_info->set_is_anonymous(lit->is_anonymous());
   function_info->set_is_toplevel(is_toplevel);
   function_info->set_inferred_name(*lit->inferred_name());
-  function_info->SetThisPropertyAssignmentsInfo(
-      lit->has_only_simple_this_property_assignments(),
-      *lit->this_property_assignments());
   function_info->set_allows_lazy_compilation(lit->AllowsLazyCompilation());
   function_info->set_allows_lazy_compilation_without_context(
       lit->AllowsLazyCompilationWithoutContext());
@@ -1153,9 +1199,9 @@ void Compiler::RecordFunctionCompilation(Logger::LogEventsAndTags tag,
     Handle<Code> code = info->code();
     if (*code == info->isolate()->builtins()->builtin(Builtins::kLazyCompile))
       return;
+    int line_num = GetScriptLineNumber(script, shared->start_position()) + 1;
+    USE(line_num);
     if (script->name()->IsString()) {
-      int line_num = GetScriptLineNumber(script, shared->start_position()) + 1;
-      USE(line_num);
       PROFILE(info->isolate(),
               CodeCreateEvent(Logger::ToNativeByScript(tag, *script),
                               *code,
@@ -1169,7 +1215,8 @@ void Compiler::RecordFunctionCompilation(Logger::LogEventsAndTags tag,
                               *code,
                               *shared,
                               info,
-                              shared->DebugName()));
+                              info->isolate()->heap()->empty_string(),
+                              line_num));
     }
   }
 
@@ -1177,6 +1224,33 @@ void Compiler::RecordFunctionCompilation(Logger::LogEventsAndTags tag,
                  Handle<Script>(info->script()),
                  Handle<Code>(info->code()),
                  info));
+}
+
+
+CompilationPhase::CompilationPhase(const char* name, CompilationInfo* info)
+    : name_(name), info_(info), zone_(info->isolate()) {
+  if (FLAG_hydrogen_stats) {
+    info_zone_start_allocation_size_ = info->zone()->allocation_size();
+    start_ticks_ = OS::Ticks();
+  }
+}
+
+
+CompilationPhase::~CompilationPhase() {
+  if (FLAG_hydrogen_stats) {
+    unsigned size = zone()->allocation_size();
+    size += info_->zone()->allocation_size() - info_zone_start_allocation_size_;
+    int64_t ticks = OS::Ticks() - start_ticks_;
+    isolate()->GetHStatistics()->SaveTiming(name_, ticks, size);
+  }
+}
+
+
+bool CompilationPhase::ShouldProduceTraceOutput() const {
+  // Produce trace output if flag is set so that the first letter of the
+  // phase name matches the command line parameter FLAG_trace_phase.
+  return (FLAG_trace_hydrogen &&
+          OS::StrChr(const_cast<char*>(FLAG_trace_phase), name_[0]) != NULL);
 }
 
 } }  // namespace v8::internal

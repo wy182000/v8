@@ -27,11 +27,6 @@
 
 #include <stdlib.h>
 
-// TODO(dcarney): remove
-#define V8_ALLOW_ACCESS_TO_PERSISTENT_ARROW
-#define V8_ALLOW_ACCESS_TO_RAW_HANDLE_CONSTRUCTOR
-#define V8_ALLOW_ACCESS_TO_PERSISTENT_IMPLICIT
-
 #include "v8.h"
 
 #include "heap.h"
@@ -57,8 +52,11 @@ class DeclarationContext {
 
   virtual ~DeclarationContext() {
     if (is_initialized_) {
-      context_->Exit();
-      context_.Dispose(context_->GetIsolate());
+      Isolate* isolate = Isolate::GetCurrent();
+      HandleScope scope(isolate);
+      Local<Context> context = Local<Context>::New(isolate, context_);
+      context->Exit();
+      context_.Dispose(isolate);
     }
   }
 
@@ -90,13 +88,13 @@ class DeclarationContext {
 
   // The handlers are called as static functions that forward
   // to the instance specific virtual methods.
-  static v8::Handle<Value> HandleGet(Local<String> key,
-                                     const AccessorInfo& info);
-  static v8::Handle<Value> HandleSet(Local<String> key,
-                                     Local<Value> value,
-                                     const AccessorInfo& info);
-  static v8::Handle<Integer> HandleQuery(Local<String> key,
-                                         const AccessorInfo& info);
+  static void HandleGet(Local<String> key,
+                        const v8::PropertyCallbackInfo<v8::Value>& info);
+  static void HandleSet(Local<String> key,
+                        Local<Value> value,
+                        const v8::PropertyCallbackInfo<v8::Value>& info);
+  static void HandleQuery(Local<String> key,
+                          const v8::PropertyCallbackInfo<v8::Integer>& info);
 
  private:
   bool is_initialized_;
@@ -106,7 +104,7 @@ class DeclarationContext {
   int set_count_;
   int query_count_;
 
-  static DeclarationContext* GetInstance(const AccessorInfo& info);
+  static DeclarationContext* GetInstance(Local<Value> data);
 };
 
 
@@ -127,14 +125,14 @@ void DeclarationContext::InitializeIfNeeded() {
                                                &HandleQuery,
                                                0, 0,
                                                data);
-  context_.Reset(isolate,
-                 Context::New(isolate,
-                              0,
-                              function->InstanceTemplate(),
-                              Local<Value>()));
-  context_->Enter();
+  Local<Context> context = Context::New(isolate,
+                                        0,
+                                        function->InstanceTemplate(),
+                                        Local<Value>());
+  context_.Reset(isolate, context);
+  context->Enter();
   is_initialized_ = true;
-  PostInitializeContext(Local<Context>::New(isolate, context_));
+  PostInitializeContext(context);
 }
 
 
@@ -175,33 +173,36 @@ void DeclarationContext::Check(const char* source,
 }
 
 
-v8::Handle<Value> DeclarationContext::HandleGet(Local<String> key,
-                                                const AccessorInfo& info) {
-  DeclarationContext* context = GetInstance(info);
+void DeclarationContext::HandleGet(
+    Local<String> key,
+    const v8::PropertyCallbackInfo<v8::Value>& info) {
+  DeclarationContext* context = GetInstance(info.Data());
   context->get_count_++;
-  return context->Get(key);
+  info.GetReturnValue().Set(context->Get(key));
 }
 
 
-v8::Handle<Value> DeclarationContext::HandleSet(Local<String> key,
-                                                Local<Value> value,
-                                                const AccessorInfo& info) {
-  DeclarationContext* context = GetInstance(info);
+void DeclarationContext::HandleSet(
+    Local<String> key,
+    Local<Value> value,
+    const v8::PropertyCallbackInfo<v8::Value>& info) {
+  DeclarationContext* context = GetInstance(info.Data());
   context->set_count_++;
-  return context->Set(key, value);
+  info.GetReturnValue().Set(context->Set(key, value));
 }
 
 
-v8::Handle<Integer> DeclarationContext::HandleQuery(Local<String> key,
-                                                    const AccessorInfo& info) {
-  DeclarationContext* context = GetInstance(info);
+void DeclarationContext::HandleQuery(
+    Local<String> key,
+    const v8::PropertyCallbackInfo<v8::Integer>& info) {
+  DeclarationContext* context = GetInstance(info.Data());
   context->query_count_++;
-  return context->Query(key);
+  info.GetReturnValue().Set(context->Query(key));
 }
 
 
-DeclarationContext* DeclarationContext::GetInstance(const AccessorInfo& info) {
-  void* value = External::Cast(*info.Data())->Value();
+DeclarationContext* DeclarationContext::GetInstance(Local<Value> data) {
+  void* value = Local<External>::Cast(data)->Value();
   return static_cast<DeclarationContext*>(value);
 }
 

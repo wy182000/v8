@@ -57,12 +57,11 @@ namespace internal {
   ICU(LoadPropertyWithInterceptorForCall)             \
   ICU(KeyedLoadPropertyWithInterceptor)               \
   ICU(StoreInterceptorProperty)                       \
-  ICU(UnaryOp_Patch)                                  \
   ICU(BinaryOp_Patch)                                 \
   ICU(CompareIC_Miss)                                 \
   ICU(CompareNilIC_Miss)                              \
   ICU(Unreachable)                                    \
-  ICU(ToBoolean_Patch)
+  ICU(ToBooleanIC_Miss)
 //
 // IC is the base class for LoadIC, StoreIC, CallIC, KeyedLoadIC,
 // and KeyedStoreIC.
@@ -170,14 +169,25 @@ class IC {
 
   virtual void UpdateMonomorphicIC(Handle<JSObject> receiver,
                                    Handle<Code> handler,
-                                   Handle<String> name) {
+                                   Handle<String> name,
+                                   StrictModeFlag strict_mode) {
     set_target(*handler);
   }
   bool UpdatePolymorphicIC(State state,
-                           StrictModeFlag strict_mode,
                            Handle<JSObject> receiver,
                            Handle<String> name,
-                           Handle<Code> code);
+                           Handle<Code> code,
+                           StrictModeFlag strict_mode);
+
+  virtual Handle<Code> ComputePolymorphicIC(MapHandleList* receiver_maps,
+                                            CodeHandleList* handlers,
+                                            int number_of_valid_maps,
+                                            Handle<Name> name,
+                                            StrictModeFlag strict_mode) {
+    UNREACHABLE();
+    return Handle<Code>::null();
+  };
+
   void CopyICToMegamorphicCache(Handle<String> name);
   bool IsTransitionedMapOfMonomorphicTarget(Map* receiver_map);
   void PatchCache(State state,
@@ -369,6 +379,7 @@ class LoadIC: public IC {
   static void GenerateMiss(MacroAssembler* masm);
   static void GenerateMegamorphic(MacroAssembler* masm);
   static void GenerateNormal(MacroAssembler* masm);
+  static void GenerateRuntimeGetProperty(MacroAssembler* masm);
 
   MUST_USE_RESULT MaybeObject* Load(State state,
                                     Handle<Object> object,
@@ -378,8 +389,7 @@ class LoadIC: public IC {
   virtual Code::Kind kind() const { return Code::LOAD_IC; }
 
   virtual Handle<Code> generic_stub() const {
-    UNREACHABLE();
-    return Handle<Code>::null();
+    return isolate()->builtins()->LoadIC_Slow();
   }
 
   virtual Handle<Code> megamorphic_stub() {
@@ -392,9 +402,18 @@ class LoadIC: public IC {
                     State state,
                     Handle<Object> object,
                     Handle<String> name);
+
   virtual void UpdateMonomorphicIC(Handle<JSObject> receiver,
                                    Handle<Code> handler,
-                                   Handle<String> name);
+                                   Handle<String> name,
+                                   StrictModeFlag strict_mode);
+
+  virtual Handle<Code> ComputePolymorphicIC(MapHandleList* receiver_maps,
+                                            CodeHandleList* handlers,
+                                            int number_of_valid_maps,
+                                            Handle<Name> name,
+                                            StrictModeFlag strict_mode);
+
   virtual Handle<Code> ComputeLoadHandler(LookupResult* lookup,
                                           Handle<JSObject> receiver,
                                           Handle<String> name);
@@ -468,7 +487,8 @@ class KeyedLoadIC: public LoadIC {
   // Update the inline cache.
   virtual void UpdateMonomorphicIC(Handle<JSObject> receiver,
                                    Handle<Code> handler,
-                                   Handle<String> name);
+                                   Handle<String> name,
+                                   StrictModeFlag strict_mode);
   virtual Handle<Code> ComputeLoadHandler(LookupResult* lookup,
                                           Handle<JSObject> receiver,
                                           Handle<String> name);
@@ -511,8 +531,8 @@ class StoreIC: public IC {
   static void GenerateMegamorphic(MacroAssembler* masm,
                                   StrictModeFlag strict_mode);
   static void GenerateNormal(MacroAssembler* masm);
-  static void GenerateGlobalProxy(MacroAssembler* masm,
-                                  StrictModeFlag strict_mode);
+  static void GenerateRuntimeSetProperty(MacroAssembler* masm,
+                                         StrictModeFlag strict_mode);
 
   MUST_USE_RESULT MaybeObject* Store(
       State state,
@@ -532,6 +552,12 @@ class StoreIC: public IC {
   virtual Handle<Code> megamorphic_stub_strict() {
     return isolate()->builtins()->StoreIC_Megamorphic_Strict();
   }
+  virtual Handle<Code> generic_stub() const {
+    return isolate()->builtins()->StoreIC_Generic();
+  }
+  virtual Handle<Code> generic_stub_strict() const {
+    return isolate()->builtins()->StoreIC_Generic_Strict();
+  }
   virtual Handle<Code> global_proxy_stub() {
     return isolate()->builtins()->StoreIC_GlobalProxy();
   }
@@ -539,6 +565,16 @@ class StoreIC: public IC {
     return isolate()->builtins()->StoreIC_GlobalProxy_Strict();
   }
 
+  virtual void UpdateMonomorphicIC(Handle<JSObject> receiver,
+                                   Handle<Code> handler,
+                                   Handle<String> name,
+                                   StrictModeFlag strict_mode);
+
+  virtual Handle<Code> ComputePolymorphicIC(MapHandleList* receiver_maps,
+                                            CodeHandleList* handlers,
+                                            int number_of_valid_maps,
+                                            Handle<Name> name,
+                                            StrictModeFlag strict_mode);
 
   // Update the inline cache and the global stub cache based on the
   // lookup result.
@@ -554,7 +590,8 @@ class StoreIC: public IC {
   virtual Handle<Code> ComputeStoreMonomorphic(LookupResult* lookup,
                                                StrictModeFlag strict_mode,
                                                Handle<JSObject> receiver,
-                                               Handle<String> name);
+                                               Handle<String> name,
+                                               Handle<Object> value);
 
  private:
   void set_target(Code* code) {
@@ -621,7 +658,8 @@ class KeyedStoreIC: public StoreIC {
   virtual Handle<Code> ComputeStoreMonomorphic(LookupResult* lookup,
                                                StrictModeFlag strict_mode,
                                                Handle<JSObject> receiver,
-                                               Handle<String> name);
+                                               Handle<String> name,
+                                               Handle<Object> value);
   virtual void UpdateMegamorphicCache(Map* map, Name* name, Code* code) { }
 
   virtual Handle<Code> megamorphic_stub() {
@@ -634,6 +672,11 @@ class KeyedStoreIC: public StoreIC {
   Handle<Code> StoreElementStub(Handle<JSObject> receiver,
                                 KeyedAccessStoreMode store_mode,
                                 StrictModeFlag strict_mode);
+
+  virtual void UpdateMonomorphicIC(Handle<JSObject> receiver,
+                                   Handle<Code> handler,
+                                   Handle<String> name,
+                                   StrictModeFlag strict_mode);
 
  private:
   void set_target(Code* code) {
@@ -675,26 +718,9 @@ class KeyedStoreIC: public StoreIC {
 
 class UnaryOpIC: public IC {
  public:
-  // sorted: increasingly more unspecific (ignoring UNINITIALIZED)
-  // TODO(svenpanne) Using enums+switch is an antipattern, use a class instead.
-  enum TypeInfo {
-    UNINITIALIZED,
-    SMI,
-    NUMBER,
-    GENERIC
-  };
+  explicit UnaryOpIC(Isolate* isolate) : IC(EXTRA_CALL_FRAME, isolate) { }
 
-  explicit UnaryOpIC(Isolate* isolate) : IC(NO_EXTRA_FRAME, isolate) { }
-
-  void patch(Code* code);
-
-  static const char* GetName(TypeInfo type_info);
-
-  static State ToState(TypeInfo type_info);
-
-  static TypeInfo GetTypeInfo(Handle<Object> operand);
-
-  static TypeInfo ComputeNewType(TypeInfo type, TypeInfo previous);
+  MUST_USE_RESULT MaybeObject* Transition(Handle<Object> object);
 };
 
 
@@ -711,6 +737,12 @@ class BinaryOpIC: public IC {
     GENERIC
   };
 
+  static void StubInfoToType(int minor_key,
+                             Handle<Type>* left,
+                             Handle<Type>* right,
+                             Handle<Type>* result,
+                             Isolate* isolate);
+
   explicit BinaryOpIC(Isolate* isolate) : IC(NO_EXTRA_FRAME, isolate) { }
 
   void patch(Code* code);
@@ -718,6 +750,9 @@ class BinaryOpIC: public IC {
   static const char* GetName(TypeInfo type_info);
 
   static State ToState(TypeInfo type_info);
+
+ private:
+  static Handle<Type> TypeInfoToType(TypeInfo binary_type, Isolate* isolate);
 };
 
 
@@ -740,6 +775,19 @@ class CompareIC: public IC {
     KNOWN_OBJECT,   // JSObject with specific map (faster check)
     GENERIC
   };
+
+  static State NewInputState(State old_state, Handle<Object> value);
+
+  static Handle<Type> StateToType(Isolate* isolate,
+                                  State state,
+                                  Handle<Map> map = Handle<Map>());
+
+  static void StubInfoToType(int stub_minor_key,
+                             Handle<Type>* left_type,
+                             Handle<Type>* right_type,
+                             Handle<Type>* overall_type,
+                             Handle<Map> map,
+                             Isolate* isolate);
 
   CompareIC(Isolate* isolate, Token::Value op)
       : IC(EXTRA_CALL_FRAME, isolate), op_(op) { }
@@ -789,19 +837,16 @@ class CompareNilIC: public IC {
 
   static void Clear(Address address, Code* target);
 
-  void patch(Code* code);
-
-  static MUST_USE_RESULT MaybeObject* DoCompareNilSlow(EqualityKind kind,
-                                                       NilValue nil,
+  static MUST_USE_RESULT MaybeObject* DoCompareNilSlow(NilValue nil,
                                                        Handle<Object> object);
 };
 
 
 class ToBooleanIC: public IC {
  public:
-  explicit ToBooleanIC(Isolate* isolate) : IC(NO_EXTRA_FRAME, isolate) { }
+  explicit ToBooleanIC(Isolate* isolate) : IC(EXTRA_CALL_FRAME, isolate) { }
 
-  void patch(Code* code);
+  MaybeObject* ToBoolean(Handle<Object> object, Code::ExtraICState state);
 };
 
 
@@ -811,7 +856,11 @@ void PatchInlinedSmiCode(Address address, InlinedSmiCheck check);
 
 DECLARE_RUNTIME_FUNCTION(MaybeObject*, KeyedLoadIC_MissFromStubFailure);
 DECLARE_RUNTIME_FUNCTION(MaybeObject*, KeyedStoreIC_MissFromStubFailure);
+DECLARE_RUNTIME_FUNCTION(MaybeObject*, UnaryOpIC_Miss);
+DECLARE_RUNTIME_FUNCTION(MaybeObject*, StoreIC_MissFromStubFailure);
+DECLARE_RUNTIME_FUNCTION(MaybeObject*, ElementsTransitionAndStoreIC_Miss);
 DECLARE_RUNTIME_FUNCTION(MaybeObject*, CompareNilIC_Miss);
+DECLARE_RUNTIME_FUNCTION(MaybeObject*, ToBooleanIC_Miss);
 
 
 } }  // namespace v8::internal

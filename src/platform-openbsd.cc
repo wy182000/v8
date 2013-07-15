@@ -79,7 +79,7 @@ static void* GetRandomMmapAddr() {
   // CpuFeatures::Probe. We don't care about randomization in this case because
   // the code page is immediately freed.
   if (isolate != NULL) {
-#ifdef V8_TARGET_ARCH_X64
+#if V8_TARGET_ARCH_X64
     uint64_t rnd1 = V8::RandomPrivate(isolate);
     uint64_t rnd2 = V8::RandomPrivate(isolate);
     uint64_t raw_addr = (rnd1 << 32) ^ rnd2;
@@ -114,13 +114,6 @@ int OS::ActivationFrameAlignment() {
   // With gcc 4.4 the tree vectorization optimizer can generate code
   // that requires 16 byte alignment such as movdqa on x86.
   return 16;
-}
-
-
-void OS::ReleaseStore(volatile AtomicWord* ptr, AtomicWord value) {
-  __asm__ __volatile__("" : : : "memory");
-  // An x86 store acts as a release barrier.
-  *ptr = value;
 }
 
 
@@ -344,6 +337,10 @@ void OS::SignalCodeMovingGC() {
   // kernel log.
   int size = sysconf(_SC_PAGESIZE);
   FILE* f = fopen(FLAG_gc_fake_mmap, "w+");
+  if (f == NULL) {
+    OS::PrintError("Failed to open %s\n", FLAG_gc_fake_mmap);
+    OS::Abort();
+  }
   void* addr = mmap(NULL, size, PROT_READ | PROT_EXEC, MAP_PRIVATE,
                     fileno(f), 0);
   ASSERT(addr != MAP_FAILED);
@@ -610,56 +607,6 @@ void Thread::SetThreadLocal(LocalStorageKey key, void* value) {
 }
 
 
-void Thread::YieldCPU() {
-  sched_yield();
-}
-
-
-class OpenBSDMutex : public Mutex {
- public:
-  OpenBSDMutex() {
-    pthread_mutexattr_t attrs;
-    int result = pthread_mutexattr_init(&attrs);
-    ASSERT(result == 0);
-    result = pthread_mutexattr_settype(&attrs, PTHREAD_MUTEX_RECURSIVE);
-    ASSERT(result == 0);
-    result = pthread_mutex_init(&mutex_, &attrs);
-    ASSERT(result == 0);
-    USE(result);
-  }
-
-  virtual ~OpenBSDMutex() { pthread_mutex_destroy(&mutex_); }
-
-  virtual int Lock() {
-    int result = pthread_mutex_lock(&mutex_);
-    return result;
-  }
-
-  virtual int Unlock() {
-    int result = pthread_mutex_unlock(&mutex_);
-    return result;
-  }
-
-  virtual bool TryLock() {
-    int result = pthread_mutex_trylock(&mutex_);
-    // Return false if the lock is busy and locking failed.
-    if (result == EBUSY) {
-      return false;
-    }
-    ASSERT(result == 0);  // Verify no other errors.
-    return true;
-  }
-
- private:
-  pthread_mutex_t mutex_;   // Pthread mutex for POSIX platforms.
-};
-
-
-Mutex* OS::CreateMutex() {
-  return new OpenBSDMutex();
-}
-
-
 class OpenBSDSemaphore : public Semaphore {
  public:
   explicit OpenBSDSemaphore(int count) {  sem_init(&sem_, 0, count); }
@@ -722,6 +669,7 @@ bool OpenBSDSemaphore::Wait(int timeout) {
     to--;
   }
 }
+
 
 Semaphore* OS::CreateSemaphore(int count) {
   return new OpenBSDSemaphore(count);

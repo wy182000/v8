@@ -58,8 +58,6 @@ class LCodeGen BASE_EMBEDDED {
         deoptimizations_(4, info->zone()),
         jump_table_(4, info->zone()),
         deoptimization_literals_(8, info->zone()),
-        prototype_maps_(0, info->zone()),
-        transition_maps_(0, info->zone()),
         inlined_function_count_(0),
         scope_(info->scope()),
         status_(UNUSED),
@@ -85,7 +83,6 @@ class LCodeGen BASE_EMBEDDED {
   Heap* heap() const { return isolate()->heap(); }
   Zone* zone() const { return zone_; }
 
-  // TODO(svenpanne) Use this consistently.
   int LookupDestination(int block_id) const {
     return chunk()->LookupDestination(block_id);
   }
@@ -108,23 +105,33 @@ class LCodeGen BASE_EMBEDDED {
   Operand ToOperand(LOperand* op) const;
   Register ToRegister(LOperand* op) const;
   XMMRegister ToDoubleRegister(LOperand* op) const;
-  bool IsX87TopOfStack(LOperand* op) const;
+  X87Register ToX87Register(LOperand* op) const;
 
   bool IsInteger32(LConstantOperand* op) const;
   bool IsSmi(LConstantOperand* op) const;
   Immediate ToInteger32Immediate(LOperand* op) const {
     return Immediate(ToInteger32(LConstantOperand::cast(op)));
   }
+  Immediate ToSmiImmediate(LOperand* op) const {
+    return Immediate(Smi::FromInt(ToInteger32(LConstantOperand::cast(op))));
+  }
+  double ToDouble(LConstantOperand* op) const;
 
   // Support for non-sse2 (x87) floating point stack handling.
-  // These functions maintain the depth of the stack (either 0 or 1)
-  void PushX87DoubleOperand(Operand src);
-  void PushX87FloatOperand(Operand src);
-  void ReadX87Operand(Operand dst);
-  bool X87StackNonEmpty() const { return x87_stack_depth_ > 0; }
-  void PopX87();
-  void CurrentInstructionReturnsX87Result();
-  void FlushX87StackIfNecessary(LInstruction* instr);
+  // These functions maintain the mapping of physical stack registers to our
+  // virtual registers between instructions.
+  enum X87OperandType { kX87DoubleOperand, kX87FloatOperand, kX87IntOperand };
+
+  void X87Mov(X87Register reg, Operand src,
+      X87OperandType operand = kX87DoubleOperand);
+  void X87Mov(Operand src, X87Register reg);
+
+  void X87PrepareBinaryOp(
+      X87Register left, X87Register right, X87Register result);
+
+  void X87LoadForUsage(X87Register reg);
+  void X87PrepareToWrite(X87Register reg);
+  void X87CommitWrite(X87Register reg);
 
   Handle<Object> ToHandle(LConstantOperand* op) const;
 
@@ -168,10 +175,7 @@ class LCodeGen BASE_EMBEDDED {
   void DoGap(LGap* instr);
 
   // Emit frame translation commands for an environment.
-  void WriteTranslation(LEnvironment* environment,
-                        Translation* translation,
-                        int* arguments_index,
-                        int* arguments_count);
+  void WriteTranslation(LEnvironment* environment, Translation* translation);
 
   void EnsureRelocSpaceForDeoptimization();
 
@@ -285,10 +289,7 @@ class LCodeGen BASE_EMBEDDED {
   void AddToTranslation(Translation* translation,
                         LOperand* op,
                         bool is_tagged,
-                        bool is_uint32,
-                        bool arguments_known,
-                        int arguments_index,
-                        int arguments_count);
+                        bool is_uint32);
   void RegisterDependentCodeForEmbeddedMaps(Handle<Code> code);
   void PopulateDeoptimizationData(Handle<Code> code);
   int DefineDeoptimizationLiteral(Handle<Object> literal);
@@ -297,9 +298,9 @@ class LCodeGen BASE_EMBEDDED {
 
   Register ToRegister(int index) const;
   XMMRegister ToDoubleRegister(int index) const;
+  X87Register ToX87Register(int index) const;
   int ToInteger32(LConstantOperand* op) const;
 
-  double ToDouble(LConstantOperand* op) const;
   Operand BuildFastArrayOperand(LOperand* elements_pointer,
                                 LOperand* key,
                                 Representation key_representation,
@@ -323,12 +324,13 @@ class LCodeGen BASE_EMBEDDED {
 
   static Condition TokenToCondition(Token::Value op, bool is_unsigned);
   void EmitGoto(int block);
-  void EmitBranch(int left_block, int right_block, Condition cc);
+  template<class InstrType>
+  void EmitBranch(InstrType instr, Condition cc);
   void EmitNumberUntagD(
       Register input,
       Register temp,
       XMMRegister result,
-      bool deoptimize_on_undefined,
+      bool allow_undefined_as_nan,
       bool deoptimize_on_minus_zero,
       LEnvironment* env,
       NumberUntagDMode mode = NUMBER_CANDIDATE_IS_ANY_TAGGED);
@@ -336,7 +338,8 @@ class LCodeGen BASE_EMBEDDED {
   void EmitNumberUntagDNoSSE2(
       Register input,
       Register temp,
-      bool deoptimize_on_undefined,
+      X87Register res_reg,
+      bool allow_undefined_as_nan,
       bool deoptimize_on_minus_zero,
       LEnvironment* env,
       NumberUntagDMode mode = NUMBER_CANDIDATE_IS_ANY_TAGGED);
@@ -362,7 +365,8 @@ class LCodeGen BASE_EMBEDDED {
   // true and false label should be made, to optimize fallthrough.
   Condition EmitIsString(Register input,
                          Register temp1,
-                         Label* is_not_string);
+                         Label* is_not_string,
+                         SmiCheck check_needed);
 
   // Emits optimized code for %_IsConstructCall().
   // Caller should branch on equal condition.
@@ -396,6 +400,16 @@ class LCodeGen BASE_EMBEDDED {
   // register, or a stack slot operand.
   void EmitPushTaggedOperand(LOperand* operand);
 
+  void X87Fxch(X87Register reg, int other_slot = 0);
+  void X87Fld(Operand src, X87OperandType opts);
+  void X87Free(X87Register reg);
+
+  void FlushX87StackIfNecessary(LInstruction* instr);
+  void EmitFlushX87ForDeopt();
+  bool X87StackContains(X87Register reg);
+  int X87ArrayIndex(X87Register reg);
+  int x87_st2idx(int pos);
+
   Zone* zone_;
   LPlatformChunk* const chunk_;
   MacroAssembler* const masm_;
@@ -407,8 +421,6 @@ class LCodeGen BASE_EMBEDDED {
   ZoneList<LEnvironment*> deoptimizations_;
   ZoneList<Deoptimizer::JumpTableEntry> jump_table_;
   ZoneList<Handle<Object> > deoptimization_literals_;
-  ZoneList<Handle<Map> > prototype_maps_;
-  ZoneList<Handle<Map> > transition_maps_;
   int inlined_function_count_;
   Scope* const scope_;
   Status status_;
@@ -419,6 +431,7 @@ class LCodeGen BASE_EMBEDDED {
   int osr_pc_offset_;
   int last_lazy_deopt_pc_;
   bool frame_is_built_;
+  X87Register x87_stack_[X87Register::kNumAllocatableRegisters];
   int x87_stack_depth_;
 
   // Builder that keeps track of safepoints in the code. The table

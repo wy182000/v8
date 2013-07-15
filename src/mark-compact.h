@@ -835,19 +835,28 @@ class MarkCompactCollector {
 
   // Mark the string table specially.  References to internalized strings from
   // the string table are weak.
-  void MarkStringTable();
+  void MarkStringTable(RootMarkingVisitor* visitor);
 
   // Mark objects in implicit references groups if their parent object
   // is marked.
   void MarkImplicitRefGroups();
 
-  // Mark all objects which are reachable due to host application
-  // logic like object groups or implicit references' groups.
-  void ProcessExternalMarking(RootMarkingVisitor* visitor);
-
   // Mark objects reachable (transitively) from objects in the marking stack
   // or overflowed in the heap.
   void ProcessMarkingDeque();
+
+  // Mark objects reachable (transitively) from objects in the marking stack
+  // or overflowed in the heap.  This respects references only considered in
+  // the final atomic marking pause including the following:
+  //    - Processing of objects reachable through Harmony WeakMaps.
+  //    - Objects reachable due to host application logic like object groups
+  //      or implicit references' groups.
+  void ProcessEphemeralMarking(ObjectVisitor* visitor);
+
+  // If the call-site of the top optimized code was not prepared for
+  // deoptimization, then treat the maps in the code as strong pointers,
+  // otherwise a map can die and deoptimize the code.
+  void ProcessTopOptimizedFrame(ObjectVisitor* visitor);
 
   // Mark objects reachable (transitively) from objects in the marking
   // stack.  This function empties the marking stack, but may leave
@@ -876,7 +885,7 @@ class MarkCompactCollector {
   void ClearNonLiveMapTransitions(Map* map, MarkBit map_mark);
 
   void ClearAndDeoptimizeDependentCode(Map* map);
-  void ClearNonLiveDependentCode(Map* map);
+  void ClearNonLiveDependentCode(DependentCode* dependent_code);
 
   // Marking detaches initial maps from SharedFunctionInfo objects
   // to make this reference weak. We need to reattach initial maps
@@ -909,6 +918,9 @@ class MarkCompactCollector {
   // for the large object space, clearing mark bits and adding unmarked
   // regions to each space's free list.
   void SweepSpaces();
+
+  int DiscoverAndPromoteBlackObjectsOnPage(NewSpace* new_space,
+                                           NewSpacePage* p);
 
   void EvacuateNewSpace();
 

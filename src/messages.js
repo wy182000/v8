@@ -73,7 +73,7 @@ var kMessages = {
   invalid_in_operator_use:       ["Cannot use 'in' operator to search for '", "%0", "' in ", "%1"],
   instanceof_function_expected:  ["Expecting a function in instanceof check, but got ", "%0"],
   instanceof_nonobject_proto:    ["Function has non-object prototype '", "%0", "' in instanceof check"],
-  null_to_object:                ["Cannot convert null to object"],
+  undefined_or_null_to_object:   ["Cannot convert undefined or null to object"],
   reduce_no_initial:             ["Reduce of empty array with no initial value"],
   getter_must_be_callable:       ["Getter must be a function: ", "%0"],
   setter_must_be_callable:       ["Setter must be a function: ", "%0"],
@@ -104,18 +104,25 @@ var kMessages = {
   observe_perform_non_function:  ["Cannot perform non-function"],
   observe_notify_non_notifier:   ["notify called on non-notifier object"],
   proto_poison_pill:             ["Generic use of __proto__ accessor not allowed"],
-  parameterless_typed_array_constr:
-                                 ["%0"," constructor should have at least one argument."],
   not_typed_array:               ["this is not a typed array."],
   invalid_argument:              ["invalid_argument"],
+  data_view_not_array_buffer:    ["First argument to DataView constructor must be an ArrayBuffer"],
+  constructor_not_function:      ["Constructor ", "%0", " requires 'new'"],
   // RangeError
   invalid_array_length:          ["Invalid array length"],
   invalid_array_buffer_length:   ["Invalid array buffer length"],
-  invalid_typed_array_offset:    ["Start offset is too large"],
-  invalid_typed_array_length:    ["Length is too large"],
+  invalid_typed_array_offset:    ["Start offset is too large:"],
+  invalid_typed_array_length:    ["Invalid typed array length"],
   invalid_typed_array_alignment: ["%0", "of", "%1", "should be a multiple of", "%3"],
   typed_array_set_source_too_large:
                                  ["Source is too large"],
+  typed_array_set_negative_offset:
+                                 ["Start offset is negative"],
+  invalid_data_view_offset:      ["Start offset is outside the bounds of the buffer"],
+  invalid_data_view_length:      ["Invalid data view length"],
+  invalid_data_view_accessor_offset:
+                                 ["Offset is outside the bounds of the DataView"],
+
   stack_overflow:                ["Maximum call stack size exceeded"],
   invalid_time_value:            ["Invalid time value"],
   // SyntaxError
@@ -543,11 +550,11 @@ function ScriptLineCount() {
  * If sourceURL comment is available and script starts at zero returns sourceURL
  * comment contents. Otherwise, script name is returned. See
  * http://fbug.googlecode.com/svn/branches/firebug1.1/docs/ReleaseNotes_1.1.txt
- * for details on using //@ sourceURL comment to identify scritps that don't
- * have name.
+ * and Source Map Revision 3 proposal for details on using //# sourceURL and
+ * deprecated //@ sourceURL comment to identify scripts that don't have name.
  *
- * @return {?string} script name if present, value for //@ sourceURL comment
- * otherwise.
+ * @return {?string} script name if present, value for //# sourceURL or
+ * deprecated //@ sourceURL comment otherwise.
  */
 function ScriptNameOrSourceURL() {
   if (this.line_offset > 0 || this.column_offset > 0) {
@@ -572,7 +579,7 @@ function ScriptNameOrSourceURL() {
   this.cachedNameOrSourceURL = this.name;
   if (sourceUrlPos > 4) {
     var sourceUrlPattern =
-        /\/\/@[\040\t]sourceURL=[\040\t]*([^\s\'\"]*)[\040\t]*$/gm;
+        /\/\/[#@][\040\t]sourceURL=[\040\t]*([^\s\'\"]*)[\040\t]*$/gm;
     // Don't reuse lastMatchInfo here, so we create a new array with room
     // for four captures (array with length one longer than the index
     // of the fourth capture, where the numbering is zero-based).
@@ -906,8 +913,8 @@ function CallSiteGetPosition() {
 
 function CallSiteIsConstructor() {
   var receiver = this[CallSiteReceiverKey];
-  var constructor =
-      IS_OBJECT(receiver) ? %GetDataProperty(receiver, "constructor") : null;
+  var constructor = (receiver != null && IS_OBJECT(receiver))
+                        ? %GetDataProperty(receiver, "constructor") : null;
   if (!constructor) return false;
   return this[CallSiteFunctionKey] === constructor;
 }

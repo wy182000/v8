@@ -36,10 +36,6 @@
 #endif
 
 
-// TODO(dcarney): remove
-#define V8_ALLOW_ACCESS_TO_PERSISTENT_ARROW
-#define V8_ALLOW_ACCESS_TO_PERSISTENT_IMPLICIT
-
 #include "v8.h"
 
 #include "global-handles.h"
@@ -239,24 +235,26 @@ TEST(MarkCompactCollector) {
 
 // TODO(1600): compaction of map space is temporary removed from GC.
 #if 0
-static Handle<Map> CreateMap() {
-  return FACTORY->NewMap(JS_OBJECT_TYPE, JSObject::kHeaderSize);
+static Handle<Map> CreateMap(Isolate* isolate) {
+  return isolate->factory()->NewMap(JS_OBJECT_TYPE, JSObject::kHeaderSize);
 }
 
 
 TEST(MapCompact) {
   FLAG_max_map_space_pages = 16;
   CcTest::InitializeVM();
+  Isolate* isolate = Isolate::Current();
+  Factory* factory = isolate->factory();
 
   {
     v8::HandleScope sc;
     // keep allocating maps while pointers are still encodable and thus
     // mark compact is permitted.
-    Handle<JSObject> root = FACTORY->NewJSObjectFromMap(CreateMap());
+    Handle<JSObject> root = factory->NewJSObjectFromMap(CreateMap());
     do {
       Handle<Map> map = CreateMap();
       map->set_prototype(*root);
-      root = FACTORY->NewJSObjectFromMap(map);
+      root = factory->NewJSObjectFromMap(map);
     } while (HEAP->map_space()->MapPointersEncodable());
   }
   // Now, as we don't have any handles to just allocated maps, we should
@@ -285,6 +283,7 @@ static void GCEpilogueCallbackFunc() {
 
 
 TEST(GCCallback) {
+  i::FLAG_stress_compaction = false;
   CcTest::InitializeVM();
 
   HEAP->SetGlobalGCPrologueCallback(&GCPrologueCallbackFunc);
@@ -311,6 +310,7 @@ static void WeakPointerCallback(v8::Isolate* isolate,
   handle->Dispose(isolate);
 }
 
+
 TEST(ObjectGroups) {
   FLAG_incremental_marking = false;
   CcTest::InitializeVM();
@@ -327,16 +327,13 @@ TEST(ObjectGroups) {
       global_handles->Create(HEAP->AllocateFixedArray(1)->ToObjectChecked());
   global_handles->MakeWeak(g1s1.location(),
                            reinterpret_cast<void*>(1234),
-                           &WeakPointerCallback,
-                           NULL);
+                           &WeakPointerCallback);
   global_handles->MakeWeak(g1s2.location(),
                            reinterpret_cast<void*>(1234),
-                           &WeakPointerCallback,
-                           NULL);
+                           &WeakPointerCallback);
   global_handles->MakeWeak(g1c1.location(),
                            reinterpret_cast<void*>(1234),
-                           &WeakPointerCallback,
-                           NULL);
+                           &WeakPointerCallback);
 
   Handle<Object> g2s1 =
       global_handles->Create(HEAP->AllocateFixedArray(1)->ToObjectChecked());
@@ -346,16 +343,13 @@ TEST(ObjectGroups) {
     global_handles->Create(HEAP->AllocateFixedArray(1)->ToObjectChecked());
   global_handles->MakeWeak(g2s1.location(),
                            reinterpret_cast<void*>(1234),
-                           &WeakPointerCallback,
-                           NULL);
+                           &WeakPointerCallback);
   global_handles->MakeWeak(g2s2.location(),
                            reinterpret_cast<void*>(1234),
-                           &WeakPointerCallback,
-                           NULL);
+                           &WeakPointerCallback);
   global_handles->MakeWeak(g2c1.location(),
                            reinterpret_cast<void*>(1234),
-                           &WeakPointerCallback,
-                           NULL);
+                           &WeakPointerCallback);
 
   Handle<Object> root = global_handles->Create(*g1s1);  // make a root.
 
@@ -384,8 +378,7 @@ TEST(ObjectGroups) {
   // Weaken the root.
   global_handles->MakeWeak(root.location(),
                            reinterpret_cast<void*>(1234),
-                           &WeakPointerCallback,
-                           NULL);
+                           &WeakPointerCallback);
   // But make children strong roots---all the objects (except for children)
   // should be collectable now.
   global_handles->ClearWeakness(g1c1.location());
@@ -413,12 +406,10 @@ TEST(ObjectGroups) {
   // And now make children weak again and collect them.
   global_handles->MakeWeak(g1c1.location(),
                            reinterpret_cast<void*>(1234),
-                           &WeakPointerCallback,
-                           NULL);
+                           &WeakPointerCallback);
   global_handles->MakeWeak(g2c1.location(),
                            reinterpret_cast<void*>(1234),
-                           &WeakPointerCallback,
-                           NULL);
+                           &WeakPointerCallback);
 
   HEAP->CollectGarbage(OLD_POINTER_SPACE);
   CHECK_EQ(7, NumberOfWeakCalls);
@@ -568,11 +559,32 @@ TEST(BootUpMemoryUse) {
       }
     } else {                            // 32-bit.
       if (v8::internal::Snapshot::IsEnabled()) {
-        CHECK_LE(delta, 2900 * 1024);
+        CHECK_LE(delta, 3100 * 1024);
       } else {
-        CHECK_LE(delta, 3400 * 1024);
+        CHECK_LE(delta, 3450 * 1024);
       }
     }
+  }
+}
+
+
+intptr_t ShortLivingIsolate() {
+  v8::Isolate* isolate = v8::Isolate::New();
+  { v8::Isolate::Scope isolate_scope(isolate);
+    v8::Locker lock(isolate);
+    v8::HandleScope handle_scope;
+    v8::Local<v8::Context> context = v8::Context::New(isolate);
+    CHECK(!context.IsEmpty());
+  }
+  isolate->Dispose();
+  return MemoryInUse();
+}
+
+
+TEST(RegressJoinThreadsOnIsolateDeinit) {
+  intptr_t size_limit = ShortLivingIsolate() * 2;
+  for (int i = 0; i < 10; i++) {
+    CHECK_GT(size_limit, ShortLivingIsolate());
   }
 }
 

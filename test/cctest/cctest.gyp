@@ -26,10 +26,11 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 {
-  'includes': ['../../build/common.gypi'],
   'variables': {
+    'v8_code': 1,
     'generated_file': '<(SHARED_INTERMEDIATE_DIR)/resources.cc',
   },
+  'includes': ['../../build/toolchain.gypi', '../../build/features.gypi'],
   'targets': [
     {
       'target_name': 'cctest',
@@ -53,7 +54,6 @@
         'test-bignum.cc',
         'test-bignum-dtoa.cc',
         'test-circular-queue.cc',
-        'test-compare-nil-ic-stub.cc',
         'test-compiler.cc',
         'test-conversions.cc',
         'test-cpu-profiler.cc',
@@ -99,15 +99,18 @@
         'test-strtod.cc',
         'test-thread-termination.cc',
         'test-threads.cc',
+        'test-types.cc',
         'test-unbound-queue.cc',
         'test-utils.cc',
         'test-version.cc',
-        'test-weakmaps.cc'
+        'test-weakmaps.cc',
+        'test-weaktypedarrays.cc'
       ],
       'conditions': [
         ['v8_target_arch=="ia32"', {
           'sources': [
             'test-assembler-ia32.cc',
+            'test-code-stubs-ia32.cc',
             'test-disasm-ia32.cc',
             'test-log-stack-tracer.cc'
           ],

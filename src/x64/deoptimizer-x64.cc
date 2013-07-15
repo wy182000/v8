@@ -27,7 +27,7 @@
 
 #include "v8.h"
 
-#if defined(V8_TARGET_ARCH_X64)
+#if V8_TARGET_ARCH_X64
 
 #include "codegen.h"
 #include "deoptimizer.h"
@@ -50,7 +50,7 @@ void Deoptimizer::DeoptimizeFunctionWithPreparedFunctionList(
     JSFunction* function) {
   Isolate* isolate = function->GetIsolate();
   HandleScope scope(isolate);
-  AssertNoAllocation no_allocation;
+  DisallowHeapAllocation nha;
 
   ASSERT(function->IsOptimized());
   ASSERT(function->FunctionsInFunctionListShareSameCode());
@@ -451,16 +451,11 @@ void Deoptimizer::EntryGenerator::Generate() {
   // Get the bailout id from the stack.
   __ movq(arg_reg_3, Operand(rsp, kSavedRegistersAreaSize));
 
-  // Get the address of the location in the code object if possible
+  // Get the address of the location in the code object
   // and compute the fp-to-sp delta in register arg5.
-  if (type() == EAGER || type() == SOFT) {
-    __ Set(arg_reg_4, 0);
-    __ lea(arg5, Operand(rsp, kSavedRegistersAreaSize + 1 * kPointerSize));
-  } else {
-    __ movq(arg_reg_4,
-            Operand(rsp, kSavedRegistersAreaSize + 1 * kPointerSize));
-    __ lea(arg5, Operand(rsp, kSavedRegistersAreaSize + 2 * kPointerSize));
-  }
+  __ movq(arg_reg_4,
+          Operand(rsp, kSavedRegistersAreaSize + 1 * kPointerSize));
+  __ lea(arg5, Operand(rsp, kSavedRegistersAreaSize + 2 * kPointerSize));
 
   __ subq(arg5, rbp);
   __ neg(arg5);
@@ -503,12 +498,8 @@ void Deoptimizer::EntryGenerator::Generate() {
     __ pop(Operand(rbx, dst_offset));
   }
 
-  // Remove the bailout id from the stack.
-  if (type() == EAGER || type() == SOFT) {
-    __ addq(rsp, Immediate(kPointerSize));
-  } else {
-    __ addq(rsp, Immediate(2 * kPointerSize));
-  }
+  // Remove the bailout id and return address from the stack.
+  __ addq(rsp, Immediate(2 * kPointerSize));
 
   // Compute a pointer to the unwinding limit in register rcx; that is
   // the first stack slot not part of the input frame.
@@ -548,7 +539,7 @@ void Deoptimizer::EntryGenerator::Generate() {
   // last FrameDescription**.
   __ movl(rdx, Operand(rax, Deoptimizer::output_count_offset()));
   __ movq(rax, Operand(rax, Deoptimizer::output_offset()));
-  __ lea(rdx, Operand(rax, rdx, times_8, 0));
+  __ lea(rdx, Operand(rax, rdx, times_pointer_size, 0));
   __ jmp(&outer_loop_header);
   __ bind(&outer_push_loop);
   // Inner loop state: rbx = current FrameDescription*, rcx = loop index.

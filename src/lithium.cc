@@ -306,8 +306,9 @@ Label* LChunk::GetAssemblyLabel(int block_id) const {
   return label->label();
 }
 
+
 void LChunk::MarkEmptyBlocks() {
-  HPhase phase("L_Mark empty blocks", this);
+  LPhase phase("L_Mark empty blocks", this);
   for (int i = 0; i < graph()->blocks()->length(); ++i) {
     HBasicBlock* block = graph()->blocks()->at(i);
     int first = block->first_instruction_index();
@@ -419,9 +420,8 @@ Representation LChunk::LookupLiteralRepresentation(
 
 
 LChunk* LChunk::NewChunk(HGraph* graph) {
-  NoHandleAllocation no_handles(graph->isolate());
-  AssertNoAllocation no_gc;
-
+  DisallowHandleAllocation no_handles;
+  DisallowHeapAllocation no_gc;
   int values = graph->GetMaximumValueID();
   CompilationInfo* info = graph->info();
   if (values > LUnallocated::kMaxVirtualRegisters) {
@@ -455,10 +455,7 @@ Handle<Code> LChunk::Codegen() {
   MarkEmptyBlocks();
 
   if (generator.GenerateCode()) {
-    if (FLAG_trace_codegen) {
-      PrintF("Crankshaft Compiler - ");
-    }
-    CodeGenerator::MakeCodePrologue(info());
+    CodeGenerator::MakeCodePrologue(info(), "optimized");
     Code::Flags flags = info()->flags();
     Handle<Code> code =
         CodeGenerator::MakeCodeEpilogue(&assembler, flags, info());
@@ -491,6 +488,13 @@ void LChunk::set_allocated_double_registers(BitVector* allocated_registers) {
       }
     }
     iterator.Advance();
+  }
+}
+
+
+LPhase::~LPhase() {
+  if (ShouldProduceTraceOutput()) {
+    isolate()->GetHTracer()->TraceLithium(name(), chunk_);
   }
 }
 

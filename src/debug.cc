@@ -121,7 +121,7 @@ BreakLocationIterator::~BreakLocationIterator() {
 
 
 void BreakLocationIterator::Next() {
-  AssertNoAllocation nogc;
+  DisallowHeapAllocation no_gc;
   ASSERT(!RinfoDone());
 
   // Iterate through reloc info for code and original code stopping at each
@@ -211,14 +211,15 @@ void BreakLocationIterator::Next(int count) {
 }
 
 
-// Find the break point closest to the supplied address.
+// Find the break point at the supplied address, or the closest one before
+// the address.
 void BreakLocationIterator::FindBreakLocationFromAddress(Address pc) {
   // Run through all break points to locate the one closest to the address.
   int closest_break_point = 0;
   int distance = kMaxInt;
   while (!Done()) {
     // Check if this break point is closer that what was previously found.
-    if (this->pc() < pc && pc - this->pc() < distance) {
+    if (this->pc() <= pc && pc - this->pc() < distance) {
       closest_break_point = break_point();
       distance = static_cast<int>(pc - this->pc());
       // Check whether we can't get any closer.
@@ -234,17 +235,30 @@ void BreakLocationIterator::FindBreakLocationFromAddress(Address pc) {
 
 
 // Find the break point closest to the supplied source position.
-void BreakLocationIterator::FindBreakLocationFromPosition(int position) {
+void BreakLocationIterator::FindBreakLocationFromPosition(int position,
+    BreakPositionAlignment alignment) {
   // Run through all break points to locate the one closest to the source
   // position.
   int closest_break_point = 0;
   int distance = kMaxInt;
+
   while (!Done()) {
+    int next_position;
+    switch (alignment) {
+    case STATEMENT_ALIGNED:
+      next_position = this->statement_position();
+      break;
+    case BREAK_POSITION_ALIGNED:
+      next_position = this->position();
+      break;
+    default:
+      UNREACHABLE();
+      next_position = this->statement_position();
+    }
     // Check if this break point is closer that what was previously found.
-    if (position <= statement_position() &&
-        statement_position() - position < distance) {
+    if (position <= next_position && next_position - position < distance) {
       closest_break_point = break_point();
-      distance = statement_position() - position;
+      distance = next_position - position;
       // Check whether we can't get any closer.
       if (distance == 0) break;
     }
@@ -386,6 +400,20 @@ void BreakLocationIterator::ClearDebugBreak() {
     ClearDebugBreakAtIC();
   }
   ASSERT(!IsDebugBreak());
+}
+
+
+bool BreakLocationIterator::IsStepInLocation(Isolate* isolate) {
+  if (RelocInfo::IsConstructCall(rmode())) {
+    return true;
+  } else if (RelocInfo::IsCodeTarget(rmode())) {
+    HandleScope scope(debug_info_->GetIsolate());
+    Address target = rinfo()->target_address();
+    Handle<Code> target_code(Code::GetCodeFromTargetAddress(target));
+    return target_code->is_call_stub() || target_code->is_keyed_call_stub();
+  } else {
+    return false;
+  }
 }
 
 
@@ -605,7 +633,7 @@ const int Debug::kFrameDropperFrameSize = 4;
 void ScriptCache::Add(Handle<Script> script) {
   GlobalHandles* global_handles = Isolate::Current()->global_handles();
   // Create an entry in the hash map for the script.
-  int id = Smi::cast(script->id())->value();
+  int id = script->id()->value();
   HashMap::Entry* entry =
       HashMap::Lookup(reinterpret_cast<void*>(id), Hash(id), true);
   if (entry->value != NULL) {
@@ -619,14 +647,14 @@ void ScriptCache::Add(Handle<Script> script) {
           (global_handles->Create(*script)));
   global_handles->MakeWeak(reinterpret_cast<Object**>(script_.location()),
                            this,
-                           NULL,
                            ScriptCache::HandleWeakScript);
   entry->value = script_.location();
 }
 
 
 Handle<FixedArray> ScriptCache::GetScripts() {
-  Handle<FixedArray> instances = FACTORY->NewFixedArray(occupancy());
+  Factory* factory = Isolate::Current()->factory();
+  Handle<FixedArray> instances = factory->NewFixedArray(occupancy());
   int count = 0;
   for (HashMap::Entry* entry = Start(); entry != NULL; entry = Next(entry)) {
     ASSERT(entry->value != NULL);
@@ -664,22 +692,21 @@ void ScriptCache::Clear() {
 
 
 void ScriptCache::HandleWeakScript(v8::Isolate* isolate,
-                                   v8::Persistent<v8::Value> obj,
+                                   v8::Persistent<v8::Value>* obj,
                                    void* data) {
   ScriptCache* script_cache = reinterpret_cast<ScriptCache*>(data);
   // Find the location of the global handle.
   Script** location =
-      reinterpret_cast<Script**>(Utils::OpenHandle(*obj).location());
+      reinterpret_cast<Script**>(Utils::OpenPersistent(*obj).location());
   ASSERT((*location)->IsScript());
 
   // Remove the entry from the cache.
-  int id = Smi::cast((*location)->id())->value();
+  int id = (*location)->id()->value();
   script_cache->Remove(reinterpret_cast<void*>(id), Hash(id));
   script_cache->collected_scripts_.Add(id);
 
   // Clear the weak handle.
-  obj.Dispose(isolate);
-  obj.Clear();
+  obj->Dispose(isolate);
 }
 
 
@@ -699,7 +726,7 @@ void Debug::SetUp(bool create_heap_objects) {
 
 
 void Debug::HandleWeakDebugInfo(v8::Isolate* isolate,
-                                v8::Persistent<v8::Value> obj,
+                                v8::Persistent<v8::Value>* obj,
                                 void* data) {
   Debug* debug = reinterpret_cast<Isolate*>(isolate)->debug();
   DebugInfoListNode* node = reinterpret_cast<DebugInfoListNode*>(data);
@@ -727,7 +754,6 @@ DebugInfoListNode::DebugInfoListNode(DebugInfo* debug_info): next_(NULL) {
       (global_handles->Create(debug_info)));
   global_handles->MakeWeak(reinterpret_cast<Object**>(debug_info_.location()),
                            this,
-                           NULL,
                            Debug::HandleWeakDebugInfo);
 }
 
@@ -790,7 +816,7 @@ bool Debug::CompileDebuggerScript(int index) {
     MessageLocation computed_location;
     isolate->ComputeLocation(&computed_location);
     Handle<Object> message = MessageHandler::MakeMessageObject(
-        "error_loading_debugger", &computed_location,
+        isolate, "error_loading_debugger", &computed_location,
         Vector<Handle<Object> >::empty(), Handle<String>(), Handle<JSArray>());
     ASSERT(!isolate->has_pending_exception());
     if (!exception.is_null()) {
@@ -939,13 +965,15 @@ Object* Debug::Break(Arguments args) {
 
   // Get the debug info (create it if it does not exist).
   Handle<SharedFunctionInfo> shared =
-      Handle<SharedFunctionInfo>(JSFunction::cast(frame->function())->shared());
+      Handle<SharedFunctionInfo>(frame->function()->shared());
   Handle<DebugInfo> debug_info = GetDebugInfo(shared);
 
   // Find the break point where execution has stopped.
   BreakLocationIterator break_location_iterator(debug_info,
                                                 ALL_BREAK_LOCATIONS);
-  break_location_iterator.FindBreakLocationFromAddress(frame->pc());
+  // pc points to the instruction after the current one, possibly a break
+  // location as well. So the "- 1" to exclude it from the search.
+  break_location_iterator.FindBreakLocationFromAddress(frame->pc() - 1);
 
   // Check whether step next reached a new statement.
   if (!StepNextContinue(&break_location_iterator, frame)) {
@@ -1175,7 +1203,7 @@ void Debug::SetBreakPoint(Handle<JSFunction> function,
 
   // Find the break point and change it.
   BreakLocationIterator it(debug_info, SOURCE_BREAK_LOCATIONS);
-  it.FindBreakLocationFromPosition(*source_position);
+  it.FindBreakLocationFromPosition(*source_position, STATEMENT_ALIGNED);
   it.SetBreakPoint(break_point_object);
 
   *source_position = it.position();
@@ -1187,7 +1215,8 @@ void Debug::SetBreakPoint(Handle<JSFunction> function,
 
 bool Debug::SetBreakPointForScript(Handle<Script> script,
                                    Handle<Object> break_point_object,
-                                   int* source_position) {
+                                   int* source_position,
+                                   BreakPositionAlignment alignment) {
   HandleScope scope(isolate_);
 
   PrepareForBreakPoints();
@@ -1218,7 +1247,7 @@ bool Debug::SetBreakPointForScript(Handle<Script> script,
 
   // Find the break point and change it.
   BreakLocationIterator it(debug_info, SOURCE_BREAK_LOCATIONS);
-  it.FindBreakLocationFromPosition(position);
+  it.FindBreakLocationFromPosition(position, alignment);
   it.SetBreakPoint(break_point_object);
 
   *source_position = it.position() + shared->start_position();
@@ -1240,15 +1269,11 @@ void Debug::ClearBreakPoint(Handle<Object> break_point_object) {
       // Get information in the break point.
       BreakPointInfo* break_point_info = BreakPointInfo::cast(result);
       Handle<DebugInfo> debug_info = node->debug_info();
-      Handle<SharedFunctionInfo> shared(debug_info->shared());
-      int source_position =  break_point_info->statement_position()->value();
-
-      // Source positions starts with zero.
-      ASSERT(source_position >= 0);
 
       // Find the break point and clear it.
       BreakLocationIterator it(debug_info, SOURCE_BREAK_LOCATIONS);
-      it.FindBreakLocationFromPosition(source_position);
+      it.FindBreakLocationFromAddress(debug_info->code()->entry() +
+          break_point_info->code_position()->value());
       it.ClearBreakPoint(break_point_object);
 
       // If there are no more break points left remove the debug info for this
@@ -1323,8 +1348,7 @@ void Debug::FloodHandlerWithOneShot() {
     JavaScriptFrame* frame = it.frame();
     if (frame->HasHandler()) {
       // Flood the function with the catch block with break points
-      JSFunction* function = JSFunction::cast(frame->function());
-      FloodWithOneShot(Handle<JSFunction>(function));
+      FloodWithOneShot(Handle<JSFunction>(frame->function()));
       return;
     }
   }
@@ -1390,13 +1414,13 @@ void Debug::PrepareStep(StepAction step_action, int step_count) {
     // breakpoints.
     frames_it.Advance();
     // Fill the function to return to with one-shot break points.
-    JSFunction* function = JSFunction::cast(frames_it.frame()->function());
+    JSFunction* function = frames_it.frame()->function();
     FloodWithOneShot(Handle<JSFunction>(function));
     return;
   }
 
   // Get the debug info (create it if it does not exist).
-  Handle<JSFunction> function(JSFunction::cast(frame->function()));
+  Handle<JSFunction> function(frame->function());
   Handle<SharedFunctionInfo> shared(function->shared());
   if (!EnsureDebugInfo(shared, function)) {
     // Return if ensuring debug info failed.
@@ -1406,7 +1430,9 @@ void Debug::PrepareStep(StepAction step_action, int step_count) {
 
   // Find the break location where execution has stopped.
   BreakLocationIterator it(debug_info, ALL_BREAK_LOCATIONS);
-  it.FindBreakLocationFromAddress(frame->pc());
+  // pc points to the instruction after the current one, possibly a break
+  // location as well. So the "- 1" to exclude it from the search.
+  it.FindBreakLocationFromAddress(frame->pc() - 1);
 
   // Compute whether or not the target is a call target.
   bool is_load_or_store = false;
@@ -1459,15 +1485,14 @@ void Debug::PrepareStep(StepAction step_action, int step_count) {
       frames_it.Advance();
     }
     // Skip builtin functions on the stack.
-    while (!frames_it.done() &&
-           JSFunction::cast(frames_it.frame()->function())->IsBuiltin()) {
+    while (!frames_it.done() && frames_it.frame()->function()->IsBuiltin()) {
       frames_it.Advance();
     }
     // Step out: If there is a JavaScript caller frame, we need to
     // flood it with breakpoints.
     if (!frames_it.done()) {
       // Fill the function to return to with one-shot break points.
-      JSFunction* function = JSFunction::cast(frames_it.frame()->function());
+      JSFunction* function = frames_it.frame()->function();
       FloodWithOneShot(Handle<JSFunction>(function));
       // Set target frame pointer.
       ActivateStepOut(frames_it.frame());
@@ -1674,7 +1699,8 @@ Handle<Code> Debug::FindDebugBreak(Handle<Code> code, RelocInfo::Mode mode) {
 
 // Simple function for returning the source positions for active break points.
 Handle<Object> Debug::GetSourceBreakLocations(
-    Handle<SharedFunctionInfo> shared) {
+    Handle<SharedFunctionInfo> shared,
+    BreakPositionAlignment position_alignment) {
   Isolate* isolate = Isolate::Current();
   Heap* heap = isolate->heap();
   if (!HasDebugInfo(shared)) {
@@ -1692,7 +1718,20 @@ Handle<Object> Debug::GetSourceBreakLocations(
       BreakPointInfo* break_point_info =
           BreakPointInfo::cast(debug_info->break_points()->get(i));
       if (break_point_info->GetBreakPointCount() > 0) {
-        locations->set(count++, break_point_info->statement_position());
+        Smi* position;
+        switch (position_alignment) {
+        case STATEMENT_ALIGNED:
+          position = break_point_info->statement_position();
+          break;
+        case BREAK_POSITION_ALIGNED:
+          position = break_point_info->source_position();
+          break;
+        default:
+          UNREACHABLE();
+          position = break_point_info->statement_position();
+        }
+
+        locations->set(count++, position);
       }
     }
   }
@@ -1769,6 +1808,7 @@ void Debug::ClearStepping() {
   // Clear multiple step counter.
   thread_local_.step_count_ = 0;
 }
+
 
 // Clears all the one-shot break points that are currently set. Normally this
 // function is called each time a break point is hit as one shot break points
@@ -1874,7 +1914,7 @@ static void CollectActiveFunctionsFromThread(
         function->shared()->code()->set_gc_metadata(active_code_marker);
       }
     } else if (frame->function()->IsJSFunction()) {
-      JSFunction* function = JSFunction::cast(frame->function());
+      JSFunction* function = frame->function();
       ASSERT(frame->LookupCode()->kind() == Code::FUNCTION);
       active_functions->Add(Handle<JSFunction>(function));
       function->shared()->code()->set_gc_metadata(active_code_marker);
@@ -1891,7 +1931,7 @@ static void RedirectActivationsToRecompiledCodeOnThread(
 
     if (frame->is_optimized() || !frame->function()->IsJSFunction()) continue;
 
-    JSFunction* function = JSFunction::cast(frame->function());
+    JSFunction* function = frame->function();
 
     ASSERT(frame->LookupCode()->kind() == Code::FUNCTION);
 
@@ -2025,7 +2065,7 @@ void Debug::PrepareForBreakPoints() {
 
       // Ensure no GC in this scope as we are going to use gc_metadata
       // field in the Code object to mark active functions.
-      AssertNoAllocation no_allocation;
+      DisallowHeapAllocation no_allocation;
 
       Object* active_code_marker = heap->the_hole_value();
 
@@ -2047,13 +2087,30 @@ void Debug::PrepareForBreakPoints() {
         if (obj->IsJSFunction()) {
           JSFunction* function = JSFunction::cast(obj);
           SharedFunctionInfo* shared = function->shared();
-          if (shared->allows_lazy_compilation() &&
-              shared->script()->IsScript() &&
-              function->code()->kind() == Code::FUNCTION &&
-              !function->code()->has_debug_break_slots() &&
-              shared->code()->gc_metadata() != active_code_marker) {
+
+          if (!shared->allows_lazy_compilation()) continue;
+          if (!shared->script()->IsScript()) continue;
+          if (shared->code()->gc_metadata() == active_code_marker) continue;
+
+          Code::Kind kind = function->code()->kind();
+          if (kind == Code::FUNCTION &&
+              !function->code()->has_debug_break_slots()) {
             function->set_code(*lazy_compile);
             function->shared()->set_code(*lazy_compile);
+          } else if (kind == Code::BUILTIN &&
+              (function->IsMarkedForInstallingRecompiledCode() ||
+               function->IsInRecompileQueue() ||
+               function->IsMarkedForLazyRecompilation() ||
+               function->IsMarkedForParallelRecompilation())) {
+            // Abort in-flight compilation.
+            Code* shared_code = function->shared()->code();
+            if (shared_code->kind() == Code::FUNCTION &&
+                shared_code->has_debug_break_slots()) {
+              function->set_code(shared_code);
+            } else {
+              function->set_code(*lazy_compile);
+              function->shared()->set_code(*lazy_compile);
+            }
           }
         }
       }
@@ -2140,7 +2197,7 @@ Object* Debug::FindSharedFunctionInfoInScript(Handle<Script> script,
   while (!done) {
     { // Extra scope for iterator and no-allocation.
       heap->EnsureHeapIsIterable();
-      AssertNoAllocation no_alloc_during_heap_iteration;
+      DisallowHeapAllocation no_alloc_during_heap_iteration;
       HeapIterator iterator(heap);
       for (HeapObject* obj = iterator.next();
            obj != NULL; obj = iterator.next()) {
@@ -2229,6 +2286,8 @@ Object* Debug::FindSharedFunctionInfoInScript(Handle<Script> script,
 // Ensures the debug information is present for shared.
 bool Debug::EnsureDebugInfo(Handle<SharedFunctionInfo> shared,
                             Handle<JSFunction> function) {
+  Isolate* isolate = shared->GetIsolate();
+
   // Return if we already have the debug info for shared.
   if (HasDebugInfo(shared)) {
     ASSERT(shared->is_compiled());
@@ -2245,7 +2304,7 @@ bool Debug::EnsureDebugInfo(Handle<SharedFunctionInfo> shared,
   }
 
   // Create the debug info object.
-  Handle<DebugInfo> debug_info = FACTORY->NewDebugInfo(shared);
+  Handle<DebugInfo> debug_info = isolate->factory()->NewDebugInfo(shared);
 
   // Add debug info to the list.
   DebugInfoListNode* node = new DebugInfoListNode(*debug_info);
@@ -2476,7 +2535,7 @@ void Debug::CreateScriptCache() {
   // Scan heap for Script objects.
   int count = 0;
   HeapIterator iterator(heap);
-  AssertNoAllocation no_allocation;
+  DisallowHeapAllocation no_allocation;
 
   for (HeapObject* obj = iterator.next(); obj != NULL; obj = iterator.next()) {
     if (obj->IsScript() && Script::cast(obj)->HasValidSource()) {
@@ -3065,13 +3124,14 @@ void Debugger::NotifyMessageHandler(v8::DebugEvent event,
     v8::Local<v8::String> fun_name =
         v8::String::New("debugCommandProcessor");
     v8::Local<v8::Function> fun =
-        v8::Function::Cast(*api_exec_state->Get(fun_name));
+        v8::Local<v8::Function>::Cast(api_exec_state->Get(fun_name));
 
     v8::Handle<v8::Boolean> running =
         auto_continue ? v8::True() : v8::False();
     static const int kArgc = 1;
     v8::Handle<Value> argv[kArgc] = { running };
-    cmd_processor = v8::Object::Cast(*fun->Call(api_exec_state, kArgc, argv));
+    cmd_processor = v8::Local<v8::Object>::Cast(
+        fun->Call(api_exec_state, kArgc, argv));
     if (try_catch.HasCaught()) {
       PrintLn(try_catch.Exception());
       return;
@@ -3111,7 +3171,7 @@ void Debugger::NotifyMessageHandler(v8::DebugEvent event,
     v8::Local<v8::Value> request;
     v8::TryCatch try_catch;
     fun_name = v8::String::New("processDebugRequest");
-    fun = v8::Function::Cast(*cmd_processor->Get(fun_name));
+    fun = v8::Local<v8::Function>::Cast(cmd_processor->Get(fun_name));
 
     request = v8::String::New(command.text().start(),
                               command.text().length());
@@ -3124,7 +3184,7 @@ void Debugger::NotifyMessageHandler(v8::DebugEvent event,
     if (!try_catch.HasCaught()) {
       // Get response string.
       if (!response_val->IsUndefined()) {
-        response = v8::String::Cast(*response_val);
+        response = v8::Local<v8::String>::Cast(response_val);
       } else {
         response = v8::String::New("");
       }
@@ -3137,7 +3197,7 @@ void Debugger::NotifyMessageHandler(v8::DebugEvent event,
 
       // Get the running state.
       fun_name = v8::String::New("isRunning");
-      fun = v8::Function::Cast(*cmd_processor->Get(fun_name));
+      fun = v8::Local<v8::Function>::Cast(cmd_processor->Get(fun_name));
       static const int kArgc = 1;
       v8::Handle<Value> argv[kArgc] = { response };
       v8::Local<v8::Value> running_val = fun->Call(cmd_processor, kArgc, argv);

@@ -56,6 +56,10 @@ SweeperThread::SweeperThread(Isolate* isolate)
 
 void SweeperThread::Run() {
   Isolate::SetIsolateThreadLocals(isolate_, NULL);
+  DisallowHeapAllocation no_allocation;
+  DisallowHandleAllocation no_handles;
+  DisallowHandleDereference no_deref;
+
   while (true) {
     start_sweeping_semaphore_->Wait();
 
@@ -89,6 +93,7 @@ void SweeperThread::Stop() {
   Release_Store(&stop_thread_, static_cast<AtomicWord>(true));
   start_sweeping_semaphore_->Signal();
   stop_semaphore_->Wait();
+  Join();
 }
 
 

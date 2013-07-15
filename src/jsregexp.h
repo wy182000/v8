@@ -71,8 +71,7 @@ class RegExpImpl {
   // Returns false if compilation fails.
   static Handle<Object> Compile(Handle<JSRegExp> re,
                                 Handle<String> pattern,
-                                Handle<String> flags,
-                                Zone* zone);
+                                Handle<String> flags);
 
   // See ECMA-262 section 15.10.6.2.
   // This function calls the garbage collector if necessary.
@@ -429,13 +428,13 @@ FOR_EACH_REG_EXP_TREE_TYPE(FORWARD_DECLARE)
 
 class TextElement {
  public:
-  enum Type {UNINITIALIZED, ATOM, CHAR_CLASS};
-  TextElement() : type(UNINITIALIZED) { }
-  explicit TextElement(Type t) : type(t), cp_offset(-1) { }
+  enum TextType {UNINITIALIZED, ATOM, CHAR_CLASS};
+  TextElement() : text_type(UNINITIALIZED) { }
+  explicit TextElement(TextType t) : text_type(t), cp_offset(-1) { }
   static TextElement Atom(RegExpAtom* atom);
   static TextElement CharClass(RegExpCharacterClass* char_class);
   int length();
-  Type type;
+  TextType text_type;
   union {
     RegExpAtom* u_atom;
     RegExpCharacterClass* u_char_class;
@@ -739,7 +738,7 @@ class SeqRegExpNode: public RegExpNode {
 
 class ActionNode: public SeqRegExpNode {
  public:
-  enum Type {
+  enum ActionType {
     SET_REGISTER,
     INCREMENT_REGISTER,
     STORE_POSITION,
@@ -780,7 +779,7 @@ class ActionNode: public SeqRegExpNode {
                             int budget,
                             BoyerMooreLookahead* bm,
                             bool not_at_start);
-  Type type() { return type_; }
+  ActionType action_type() { return action_type_; }
   // TODO(erikcorry): We should allow some action nodes in greedy loops.
   virtual int GreedyLoopTextLength() { return kNodeIsTooComplexForGreedyLoops; }
 
@@ -813,10 +812,10 @@ class ActionNode: public SeqRegExpNode {
       int range_to;
     } u_clear_captures;
   } data_;
-  ActionNode(Type type, RegExpNode* on_success)
+  ActionNode(ActionType action_type, RegExpNode* on_success)
       : SeqRegExpNode(on_success),
-        type_(type) { }
-  Type type_;
+        action_type_(action_type) { }
+  ActionType action_type_;
   friend class DotPrinter;
 };
 
@@ -876,7 +875,7 @@ class TextNode: public SeqRegExpNode {
 
 class AssertionNode: public SeqRegExpNode {
  public:
-  enum AssertionNodeType {
+  enum AssertionType {
     AT_END,
     AT_START,
     AT_BOUNDARY,
@@ -909,8 +908,7 @@ class AssertionNode: public SeqRegExpNode {
                             int budget,
                             BoyerMooreLookahead* bm,
                             bool not_at_start);
-  AssertionNodeType type() { return type_; }
-  void set_type(AssertionNodeType type) { type_ = type; }
+  AssertionType assertion_type() { return assertion_type_; }
 
  private:
   void EmitBoundaryCheck(RegExpCompiler* compiler, Trace* trace);
@@ -918,9 +916,9 @@ class AssertionNode: public SeqRegExpNode {
   void BacktrackIfPrevious(RegExpCompiler* compiler,
                            Trace* trace,
                            IfPrevious backtrack_if_previous);
-  AssertionNode(AssertionNodeType t, RegExpNode* on_success)
-      : SeqRegExpNode(on_success), type_(t) { }
-  AssertionNodeType type_;
+  AssertionNode(AssertionType t, RegExpNode* on_success)
+      : SeqRegExpNode(on_success), assertion_type_(t) { }
+  AssertionType assertion_type_;
 };
 
 
@@ -1332,19 +1330,19 @@ class Trace {
   // A value for a property that is either known to be true, know to be false,
   // or not known.
   enum TriBool {
-    UNKNOWN = -1, FALSE = 0, TRUE = 1
+    UNKNOWN = -1, FALSE_VALUE = 0, TRUE_VALUE = 1
   };
 
   class DeferredAction {
    public:
-    DeferredAction(ActionNode::Type type, int reg)
-        : type_(type), reg_(reg), next_(NULL) { }
+    DeferredAction(ActionNode::ActionType action_type, int reg)
+        : action_type_(action_type), reg_(reg), next_(NULL) { }
     DeferredAction* next() { return next_; }
     bool Mentions(int reg);
     int reg() { return reg_; }
-    ActionNode::Type type() { return type_; }
+    ActionNode::ActionType action_type() { return action_type_; }
    private:
-    ActionNode::Type type_;
+    ActionNode::ActionType action_type_;
     int reg_;
     DeferredAction* next_;
     friend class Trace;
@@ -1428,7 +1426,9 @@ class Trace {
            at_start_ == UNKNOWN;
   }
   TriBool at_start() { return at_start_; }
-  void set_at_start(bool at_start) { at_start_ = at_start ? TRUE : FALSE; }
+  void set_at_start(bool at_start) {
+    at_start_ = at_start ? TRUE_VALUE : FALSE_VALUE;
+  }
   Label* backtrack() { return backtrack_; }
   Label* loop_label() { return loop_label_; }
   RegExpNode* stop_node() { return stop_node_; }

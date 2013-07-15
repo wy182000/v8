@@ -27,7 +27,7 @@
 
 #include "v8.h"
 
-#if defined(V8_TARGET_ARCH_X64)
+#if V8_TARGET_ARCH_X64
 
 #include "macro-assembler.h"
 #include "serialize.h"
@@ -902,10 +902,12 @@ void Assembler::clc() {
   emit(0xF8);
 }
 
+
 void Assembler::cld() {
   EnsureSpace ensure_space(this);
   emit(0xFC);
 }
+
 
 void Assembler::cdq() {
   EnsureSpace ensure_space(this);
@@ -1590,7 +1592,7 @@ void Assembler::movl(const Operand& dst, Label* src) {
 
 
 void Assembler::movq(Register dst, Handle<Object> value, RelocInfo::Mode mode) {
-  ALLOW_HANDLE_DEREF(isolate(), "using and embedding raw address");
+  AllowDeferredHandleDereference using_raw_address;
   // If there is no relocation info, emit the value of the handle efficiently
   // (possibly using less that 8 bytes for the value).
   if (RelocInfo::IsNone(mode)) {
@@ -2522,6 +2524,7 @@ void Assembler::emit_farith(int b1, int b2, int i) {
   emit(b2 + i);
 }
 
+
 // SSE 2 operations.
 
 void Assembler::movd(XMMRegister dst, Register src) {
@@ -2581,6 +2584,7 @@ void Assembler::movq(XMMRegister dst, XMMRegister src) {
     emit_sse_operand(src, dst);
   }
 }
+
 
 void Assembler::movdqa(const Operand& dst, XMMRegister src) {
   EnsureSpace ensure_space(this);
@@ -3035,9 +3039,11 @@ void Assembler::emit_sse_operand(XMMRegister dst, XMMRegister src) {
   emit(0xC0 | (dst.low_bits() << 3) | src.low_bits());
 }
 
+
 void Assembler::emit_sse_operand(XMMRegister dst, Register src) {
   emit(0xC0 | (dst.low_bits() << 3) | src.low_bits());
 }
+
 
 void Assembler::emit_sse_operand(Register dst, XMMRegister src) {
   emit(0xC0 | (dst.low_bits() << 3) | src.low_bits());
@@ -3074,6 +3080,7 @@ void Assembler::RecordRelocInfo(RelocInfo::Mode rmode, intptr_t data) {
   RelocInfo rinfo(pc_, rmode, data, NULL);
   reloc_info_writer.Write(&rinfo);
 }
+
 
 void Assembler::RecordJSReturn() {
   positions_recorder()->WriteRecordedPositions();

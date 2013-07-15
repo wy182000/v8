@@ -29,10 +29,11 @@
 
 #include "v8.h"
 
-#if defined(V8_TARGET_ARCH_MIPS)
+#if V8_TARGET_ARCH_MIPS
 
 #include "bootstrapper.h"
 #include "codegen.h"
+#include "cpu-profiler.h"
 #include "debug.h"
 #include "runtime.h"
 
@@ -83,12 +84,11 @@ void MacroAssembler::StoreRoot(Register source,
 
 void MacroAssembler::LoadHeapObject(Register result,
                                     Handle<HeapObject> object) {
-  ALLOW_HANDLE_DEREF(isolate(), "using raw address");
+  AllowDeferredHandleDereference using_raw_address;
   if (isolate()->heap()->InNewSpace(*object)) {
-    Handle<JSGlobalPropertyCell> cell =
-        isolate()->factory()->NewJSGlobalPropertyCell(object);
+    Handle<Cell> cell = isolate()->factory()->NewCell(object);
     li(result, Operand(cell));
-    lw(result, FieldMemOperand(result, JSGlobalPropertyCell::kValueOffset));
+    lw(result, FieldMemOperand(result, Cell::kValueOffset));
   } else {
     li(result, Operand(object));
   }
@@ -768,6 +768,7 @@ void MacroAssembler::Ror(Register rd, Register rs, const Operand& rt) {
   }
 }
 
+
 //------------Pseudo-instructions-------------
 
 void MacroAssembler::li(Register rd, Operand j, LiFlags mode) {
@@ -1021,6 +1022,7 @@ void MacroAssembler::Trunc_uw_d(FPURegister fd,
   mtc1(t8, fd);
 }
 
+
 void MacroAssembler::Trunc_w_d(FPURegister fd, FPURegister fs) {
   if (kArchVariant == kLoongson && fd.is(fs)) {
     mfc1(t8, FPURegister::from_code(fs.code() + 1));
@@ -1030,6 +1032,7 @@ void MacroAssembler::Trunc_w_d(FPURegister fd, FPURegister fs) {
     trunc_w_d(fd, fs);
   }
 }
+
 
 void MacroAssembler::Round_w_d(FPURegister fd, FPURegister fs) {
   if (kArchVariant == kLoongson && fd.is(fs)) {
@@ -2458,7 +2461,7 @@ void MacroAssembler::Jump(Handle<Code> code,
                           const Operand& rt,
                           BranchDelaySlot bd) {
   ASSERT(RelocInfo::IsCodeTarget(rmode));
-  ALLOW_HANDLE_DEREF(isolate(), "embedding raw address");
+  AllowDeferredHandleDereference embedding_raw_address;
   Jump(reinterpret_cast<intptr_t>(code.location()), rmode, cond, rs, rt, bd);
 }
 
@@ -2546,7 +2549,7 @@ int MacroAssembler::CallSize(Handle<Code> code,
                              Register rs,
                              const Operand& rt,
                              BranchDelaySlot bd) {
-  ALLOW_HANDLE_DEREF(isolate(), "using raw address");
+  AllowDeferredHandleDereference using_raw_address;
   return CallSize(reinterpret_cast<Address>(code.location()),
       rmode, cond, rs, rt, bd);
 }
@@ -2567,7 +2570,7 @@ void MacroAssembler::Call(Handle<Code> code,
     SetRecordedAstId(ast_id);
     rmode = RelocInfo::CODE_TARGET_WITH_ID;
   }
-  ALLOW_HANDLE_DEREF(isolate(), "embedding raw address");
+  AllowDeferredHandleDereference embedding_raw_address;
   Call(reinterpret_cast<Address>(code.location()), rmode, cond, rs, rt, bd);
   ASSERT_EQ(CallSize(code, rmode, ast_id, cond, rs, rt, bd),
             SizeOfCodeGeneratedSince(&start));
@@ -2638,6 +2641,7 @@ void MacroAssembler::Jalr(Label* L, BranchDelaySlot bdslot) {
   if (bdslot == PROTECT)
     nop();
 }
+
 
 void MacroAssembler::DropAndRet(int drop) {
   Ret(USE_DELAY_SLOT);
@@ -3203,6 +3207,14 @@ void MacroAssembler::AllocateAsciiSlicedString(Register result,
 }
 
 
+void MacroAssembler::JumpIfNotUniqueName(Register reg,
+                                         Label* not_unique_name) {
+  STATIC_ASSERT(((SYMBOL_TYPE - 1) & kIsInternalizedMask) == kInternalizedTag);
+  Branch(not_unique_name, lt, reg, Operand(kIsInternalizedMask));
+  Branch(not_unique_name, gt, reg, Operand(SYMBOL_TYPE));
+}
+
+
 // Allocates a heap number or jumps to the label if the young space is full and
 // a scavenge is needed.
 void MacroAssembler::AllocateHeapNumber(Register result,
@@ -3464,10 +3476,9 @@ void MacroAssembler::CompareMapAndBranch(Register obj,
                                          Handle<Map> map,
                                          Label* early_success,
                                          Condition cond,
-                                         Label* branch_to,
-                                         CompareMapMode mode) {
+                                         Label* branch_to) {
   lw(scratch, FieldMemOperand(obj, HeapObject::kMapOffset));
-  CompareMapAndBranch(scratch, map, early_success, cond, branch_to, mode);
+  CompareMapAndBranch(scratch, map, early_success, cond, branch_to);
 }
 
 
@@ -3475,25 +3486,8 @@ void MacroAssembler::CompareMapAndBranch(Register obj_map,
                                          Handle<Map> map,
                                          Label* early_success,
                                          Condition cond,
-                                         Label* branch_to,
-                                         CompareMapMode mode) {
-  Operand right = Operand(map);
-  if (mode == ALLOW_ELEMENT_TRANSITION_MAPS) {
-    ElementsKind kind = map->elements_kind();
-    if (IsFastElementsKind(kind)) {
-      bool packed = IsFastPackedElementsKind(kind);
-      Map* current_map = *map;
-      while (CanTransitionToMoreGeneralFastElementsKind(kind, packed)) {
-        kind = GetNextMoreGeneralFastElementsKind(kind, packed);
-        current_map = current_map->LookupElementsTransitionMap(kind);
-        if (!current_map) break;
-        Branch(early_success, eq, obj_map, right);
-        right = Operand(Handle<Map>(current_map));
-      }
-    }
-  }
-
-  Branch(branch_to, cond, obj_map, right);
+                                         Label* branch_to) {
+  Branch(branch_to, cond, obj_map, Operand(map));
 }
 
 
@@ -3501,13 +3495,12 @@ void MacroAssembler::CheckMap(Register obj,
                               Register scratch,
                               Handle<Map> map,
                               Label* fail,
-                              SmiCheckType smi_check_type,
-                              CompareMapMode mode) {
+                              SmiCheckType smi_check_type) {
   if (smi_check_type == DO_SMI_CHECK) {
     JumpIfSmi(obj, fail);
   }
   Label success;
-  CompareMapAndBranch(obj, scratch, map, &success, ne, fail, mode);
+  CompareMapAndBranch(obj, scratch, map, &success, ne, fail);
   bind(&success);
 }
 
@@ -3929,6 +3922,9 @@ static int AddressOffset(ExternalReference ref0, ExternalReference ref1) {
 
 
 void MacroAssembler::CallApiFunctionAndReturn(ExternalReference function,
+                                              Address function_address,
+                                              ExternalReference thunk_ref,
+                                              Register thunk_last_arg,
                                               int stack_space,
                                               bool returns_handle,
                                               int return_value_offset_from_fp) {
@@ -3963,13 +3959,34 @@ void MacroAssembler::CallApiFunctionAndReturn(ExternalReference function,
   // (4 bytes) will be placed. This is also built into the Simulator.
   // Set up the pointer to the returned value (a0). It was allocated in
   // EnterExitFrame.
-  addiu(a0, fp, ExitFrameConstants::kStackSpaceOffset);
+  if (returns_handle) {
+    addiu(a0, fp, ExitFrameConstants::kStackSpaceOffset);
+  }
+
+  Label profiler_disabled;
+  Label end_profiler_check;
+  bool* is_profiling_flag =
+      isolate()->cpu_profiler()->is_profiling_address();
+  STATIC_ASSERT(sizeof(*is_profiling_flag) == 1);
+  li(t9, reinterpret_cast<int32_t>(is_profiling_flag));
+  lb(t9, MemOperand(t9, 0));
+  beq(t9, zero_reg, &profiler_disabled);
+
+  // Third parameter is the address of the actual getter function.
+  li(thunk_last_arg, reinterpret_cast<int32_t>(function_address));
+  li(t9, Operand(thunk_ref));
+  jmp(&end_profiler_check);
+
+  bind(&profiler_disabled);
+  li(t9, Operand(function));
+
+  bind(&end_profiler_check);
 
   // Native call returns to the DirectCEntry stub which redirects to the
   // return address pushed on stack (could have moved after GC).
   // DirectCEntry stub itself is generated early and never moves.
   DirectCEntryStub stub;
-  stub.GenerateCall(this, function);
+  stub.GenerateCall(this, t9);
 
   if (FLAG_log_timer_events) {
     FrameScope frame(this, StackFrame::MANUAL);
@@ -4711,19 +4728,19 @@ void MacroAssembler::InitializeNewString(Register string,
 
 
 int MacroAssembler::ActivationFrameAlignment() {
-#if defined(V8_HOST_ARCH_MIPS)
+#if V8_HOST_ARCH_MIPS
   // Running on the real platform. Use the alignment as mandated by the local
   // environment.
   // Note: This will break if we ever start generating snapshots on one Mips
   // platform for another Mips platform with a different alignment.
   return OS::ActivationFrameAlignment();
-#else  // defined(V8_HOST_ARCH_MIPS)
+#else  // V8_HOST_ARCH_MIPS
   // If we are using the simulator then we should always align to the expected
   // alignment. As the simulator is used to generate snapshots we do not know
   // if the target platform will need alignment, so this is controlled from a
   // flag.
   return FLAG_sim_stack_alignment;
-#endif  // defined(V8_HOST_ARCH_MIPS)
+#endif  // V8_HOST_ARCH_MIPS
 }
 
 
@@ -5054,7 +5071,7 @@ void MacroAssembler::CallCFunctionHelper(Register function,
   // The argument stots are presumed to have been set up by
   // PrepareCallCFunction. The C function must be called via t9, for mips ABI.
 
-#if defined(V8_HOST_ARCH_MIPS)
+#if V8_HOST_ARCH_MIPS
   if (emit_debug_code()) {
     int frame_alignment = OS::ActivationFrameAlignment();
     int frame_alignment_mask = frame_alignment - 1;

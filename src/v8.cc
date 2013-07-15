@@ -56,6 +56,7 @@ bool V8::has_been_disposed_ = false;
 bool V8::has_fatal_error_ = false;
 bool V8::use_crankshaft_ = true;
 List<CallCompletedCallback>* V8::call_completed_callbacks_ = NULL;
+v8::ArrayBuffer::Allocator* V8::array_buffer_allocator_ = NULL;
 
 static LazyMutex entropy_mutex = LAZY_MUTEX_INITIALIZER;
 
@@ -262,6 +263,7 @@ Object* V8::FillHeapNumberWithRandom(Object* heap_number,
   return heap_number;
 }
 
+
 void V8::InitializeOncePerProcessImpl() {
   FlagList::EnforceFlagImplications();
   if (FLAG_stress_compaction) {
@@ -270,6 +272,44 @@ void V8::InitializeOncePerProcessImpl() {
     FLAG_max_new_space_size = (1 << (kPageSizeBits - 10)) * 2;
   }
   if (FLAG_trace_hydrogen) FLAG_parallel_recompilation = false;
+
+  if (FLAG_sweeper_threads <= 0) {
+    if (FLAG_concurrent_sweeping) {
+      FLAG_sweeper_threads = SystemThreadManager::
+          NumberOfParallelSystemThreads(
+              SystemThreadManager::CONCURRENT_SWEEPING);
+    } else if (FLAG_parallel_sweeping) {
+      FLAG_sweeper_threads = SystemThreadManager::
+          NumberOfParallelSystemThreads(
+              SystemThreadManager::PARALLEL_SWEEPING);
+    }
+    if (FLAG_sweeper_threads == 0) {
+      FLAG_concurrent_sweeping = false;
+      FLAG_parallel_sweeping = false;
+    }
+  } else if (!FLAG_concurrent_sweeping && !FLAG_parallel_sweeping) {
+    FLAG_sweeper_threads = 0;
+  }
+
+  if (FLAG_parallel_marking) {
+    if (FLAG_marking_threads <= 0) {
+      FLAG_marking_threads = SystemThreadManager::
+          NumberOfParallelSystemThreads(
+              SystemThreadManager::PARALLEL_MARKING);
+    }
+    if (FLAG_marking_threads == 0) {
+      FLAG_parallel_marking = false;
+    }
+  } else {
+    FLAG_marking_threads = 0;
+  }
+
+  if (FLAG_parallel_recompilation &&
+      SystemThreadManager::NumberOfParallelSystemThreads(
+          SystemThreadManager::PARALLEL_RECOMPILATION) == 0) {
+    FLAG_parallel_recompilation = false;
+  }
+
   OS::SetUp();
   Sampler::SetUp();
   CPU::SetUp();
@@ -283,6 +323,7 @@ void V8::InitializeOncePerProcessImpl() {
   ExternalReference::SetUp();
   Bootstrapper::InitializeOncePerProcess();
 }
+
 
 void V8::InitializeOncePerProcess() {
   CallOnce(&init_once, &InitializeOncePerProcessImpl);

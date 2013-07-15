@@ -222,7 +222,6 @@ void LGapResolver::EmitMove(int index) {
       ASSERT(destination->IsStackSlot());
       __ sw(source_register, cgen_->ToMemOperand(destination));
     }
-
   } else if (source->IsStackSlot()) {
     MemOperand source_operand = cgen_->ToMemOperand(source);
     if (destination->IsRegister()) {
@@ -252,15 +251,23 @@ void LGapResolver::EmitMove(int index) {
     LConstantOperand* constant_source = LConstantOperand::cast(source);
     if (destination->IsRegister()) {
       Register dst = cgen_->ToRegister(destination);
-      if (cgen_->IsInteger32(constant_source)) {
+      if (cgen_->IsSmi(constant_source)) {
+        __ li(dst, Operand(cgen_->ToSmi(constant_source)));
+      } else if (cgen_->IsInteger32(constant_source)) {
         __ li(dst, Operand(cgen_->ToInteger32(constant_source)));
       } else {
         __ LoadObject(dst, cgen_->ToHandle(constant_source));
       }
+    } else if (source->IsDoubleRegister()) {
+      DoubleRegister result = cgen_->ToDoubleRegister(destination);
+      double v = cgen_->ToDouble(constant_source);
+      __ Move(result, v);
     } else {
       ASSERT(destination->IsStackSlot());
       ASSERT(!in_cycle_);  // Constant moves happen after all cycles are gone.
-      if (cgen_->IsInteger32(constant_source)) {
+      if (cgen_->IsSmi(constant_source)) {
+        __ li(kLithiumScratchReg, Operand(cgen_->ToSmi(constant_source)));
+      } else if (cgen_->IsInteger32(constant_source)) {
         __ li(kLithiumScratchReg,
               Operand(cgen_->ToInteger32(constant_source)));
       } else {

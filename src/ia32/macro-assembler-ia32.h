@@ -272,14 +272,24 @@ class MacroAssembler: public Assembler {
   void LoadFromSafepointRegisterSlot(Register dst, Register src);
 
   void LoadHeapObject(Register result, Handle<HeapObject> object);
+  void CmpHeapObject(Register reg, Handle<HeapObject> object);
   void PushHeapObject(Handle<HeapObject> object);
 
   void LoadObject(Register result, Handle<Object> object) {
-    ALLOW_HANDLE_DEREF(isolate(), "heap object check");
+    AllowDeferredHandleDereference heap_object_check;
     if (object->IsHeapObject()) {
       LoadHeapObject(result, Handle<HeapObject>::cast(object));
     } else {
       Set(result, Immediate(object));
+    }
+  }
+
+  void CmpObject(Register reg, Handle<Object> object) {
+    AllowDeferredHandleDereference heap_object_check;
+    if (object->IsHeapObject()) {
+      CmpHeapObject(reg, Handle<HeapObject>::cast(object));
+    } else {
+      cmp(reg, Immediate(object));
     }
   }
 
@@ -774,6 +784,8 @@ class MacroAssembler: public Assembler {
   // caller-save registers.  Restores context.  On return removes
   // stack_space * kPointerSize (GCed).
   void CallApiFunctionAndReturn(Address function_address,
+                                Address thunk_address,
+                                Operand thunk_last_arg,
                                 int stack_space,
                                 bool returns_handle,
                                 int return_value_offset_from_ebp);
@@ -871,6 +883,15 @@ class MacroAssembler: public Assembler {
                                            Register scratch1,
                                            Register scratch2,
                                            Label* on_not_flat_ascii_strings);
+
+  // Checks if the given register or operand is a unique name
+  void JumpIfNotUniqueName(Register reg, Label* not_unique_name,
+                           Label::Distance distance = Label::kFar) {
+    JumpIfNotUniqueName(Operand(reg), not_unique_name, distance);
+  }
+
+  void JumpIfNotUniqueName(Operand operand, Label* not_unique_name,
+                           Label::Distance distance = Label::kFar);
 
   static int SafepointRegisterStackIndex(Register reg) {
     return SafepointRegisterStackIndex(reg.code());

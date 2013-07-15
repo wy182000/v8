@@ -76,11 +76,14 @@ void BreakableStatementChecker::VisitExportDeclaration(
 void BreakableStatementChecker::VisitModuleLiteral(ModuleLiteral* module) {
 }
 
+
 void BreakableStatementChecker::VisitModuleVariable(ModuleVariable* module) {
 }
 
+
 void BreakableStatementChecker::VisitModulePath(ModulePath* module) {
 }
+
 
 void BreakableStatementChecker::VisitModuleUrl(ModuleUrl* module) {
 }
@@ -160,6 +163,12 @@ void BreakableStatementChecker::VisitForStatement(ForStatement* stmt) {
 void BreakableStatementChecker::VisitForInStatement(ForInStatement* stmt) {
   // Mark for in statements breakable if the enumerable expression is.
   Visit(stmt->enumerable());
+}
+
+
+void BreakableStatementChecker::VisitForOfStatement(ForOfStatement* stmt) {
+  // For-of is breakable because of the next() call.
+  is_breakable_ = true;
 }
 
 
@@ -304,10 +313,7 @@ bool FullCodeGenerator::MakeCode(CompilationInfo* info) {
     int len = String::cast(script->source())->length();
     isolate->counters()->total_full_codegen_source_size()->Increment(len);
   }
-  if (FLAG_trace_codegen) {
-    PrintF("Full Compiler - ");
-  }
-  CodeGenerator::MakeCodePrologue(info);
+  CodeGenerator::MakeCodePrologue(info, "full");
   const int kInitialBufferSize = 4 * KB;
   MacroAssembler masm(info->isolate(), NULL, kInitialBufferSize);
 #ifdef ENABLE_GDB_JIT_INTERFACE
@@ -470,7 +476,7 @@ void FullCodeGenerator::PrepareForBailoutForId(BailoutId id, State state) {
 
 
 void FullCodeGenerator::RecordTypeFeedbackCell(
-    TypeFeedbackId id, Handle<JSGlobalPropertyCell> cell) {
+    TypeFeedbackId id, Handle<Cell> cell) {
   TypeFeedbackCellEntry entry = { id, cell };
   type_feedback_cells_.Add(entry, zone());
 }
@@ -923,10 +929,10 @@ void FullCodeGenerator::EmitInlineRuntimeCall(CallRuntime* expr) {
 }
 
 
-void FullCodeGenerator::EmitGeneratorSend(CallRuntime* expr) {
+void FullCodeGenerator::EmitGeneratorNext(CallRuntime* expr) {
   ZoneList<Expression*>* args = expr->arguments();
   ASSERT(args->length() == 2);
-  EmitGeneratorResume(args->at(0), args->at(1), JSGeneratorObject::SEND);
+  EmitGeneratorResume(args->at(0), args->at(1), JSGeneratorObject::NEXT);
 }
 
 
@@ -934,6 +940,11 @@ void FullCodeGenerator::EmitGeneratorThrow(CallRuntime* expr) {
   ZoneList<Expression*>* args = expr->arguments();
   ASSERT(args->length() == 2);
   EmitGeneratorResume(args->at(0), args->at(1), JSGeneratorObject::THROW);
+}
+
+
+void FullCodeGenerator::EmitDebugBreakInOptimizedCode(CallRuntime* expr) {
+  context()->Plug(handle(Smi::FromInt(0), isolate()));
 }
 
 
@@ -1227,13 +1238,7 @@ void FullCodeGenerator::VisitBreakStatement(BreakStatement* stmt) {
 }
 
 
-void FullCodeGenerator::VisitReturnStatement(ReturnStatement* stmt) {
-  Comment cmnt(masm_, "[ ReturnStatement");
-  SetStatementPosition(stmt);
-  Expression* expr = stmt->expression();
-  VisitForAccumulatorValue(expr);
-
-  // Exit all nested statements.
+void FullCodeGenerator::EmitUnwindBeforeReturn() {
   NestedStatement* current = nesting_stack_;
   int stack_depth = 0;
   int context_length = 0;
@@ -1241,7 +1246,15 @@ void FullCodeGenerator::VisitReturnStatement(ReturnStatement* stmt) {
     current = current->Exit(&stack_depth, &context_length);
   }
   __ Drop(stack_depth);
+}
 
+
+void FullCodeGenerator::VisitReturnStatement(ReturnStatement* stmt) {
+  Comment cmnt(masm_, "[ ReturnStatement");
+  SetStatementPosition(stmt);
+  Expression* expr = stmt->expression();
+  VisitForAccumulatorValue(expr);
+  EmitUnwindBeforeReturn();
   EmitReturnSequence();
 }
 
@@ -1540,7 +1553,7 @@ void FullCodeGenerator::VisitConditional(Conditional* expr) {
 
 void FullCodeGenerator::VisitLiteral(Literal* expr) {
   Comment cmnt(masm_, "[ Literal");
-  context()->Plug(expr->handle());
+  context()->Plug(expr->value());
 }
 
 

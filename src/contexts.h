@@ -134,6 +134,7 @@ enum BindingFlags {
   V(FLOAT_ARRAY_FUN_INDEX, JSFunction, float_array_fun) \
   V(DOUBLE_ARRAY_FUN_INDEX, JSFunction, double_array_fun) \
   V(UINT8C_ARRAY_FUN_INDEX, JSFunction, uint8c_array_fun) \
+  V(DATA_VIEW_FUN_INDEX, JSFunction, data_view_fun) \
   V(FUNCTION_MAP_INDEX, Map, function_map) \
   V(STRICT_MODE_FUNCTION_MAP_INDEX, Map, strict_mode_function_map) \
   V(FUNCTION_WITHOUT_PROTOTYPE_MAP_INDEX, Map, function_without_prototype_map) \
@@ -172,6 +173,11 @@ enum BindingFlags {
   V(DERIVED_SET_TRAP_INDEX, JSFunction, derived_set_trap) \
   V(PROXY_ENUMERATE_INDEX, JSFunction, proxy_enumerate) \
   V(OBSERVERS_NOTIFY_CHANGE_INDEX, JSFunction, observers_notify_change) \
+  V(OBSERVERS_ENQUEUE_SPLICE_INDEX, JSFunction, observers_enqueue_splice) \
+  V(OBSERVERS_BEGIN_SPLICE_INDEX, JSFunction, \
+    observers_begin_perform_splice) \
+  V(OBSERVERS_END_SPLICE_INDEX, JSFunction, \
+    observers_end_perform_splice) \
   V(OBSERVERS_DELIVER_CHANGES_INDEX, JSFunction, observers_deliver_changes) \
   V(GENERATOR_FUNCTION_MAP_INDEX, Map, generator_function_map) \
   V(STRICT_MODE_GENERATOR_FUNCTION_MAP_INDEX, Map, \
@@ -294,6 +300,7 @@ class Context: public FixedArray {
     FLOAT_ARRAY_FUN_INDEX,
     DOUBLE_ARRAY_FUN_INDEX,
     UINT8C_ARRAY_FUN_INDEX,
+    DATA_VIEW_FUN_INDEX,
     MESSAGE_LISTENERS_INDEX,
     MAKE_MESSAGE_FUN_INDEX,
     GET_STACK_TRACE_LINE_INDEX,
@@ -317,6 +324,9 @@ class Context: public FixedArray {
     DERIVED_SET_TRAP_INDEX,
     PROXY_ENUMERATE_INDEX,
     OBSERVERS_NOTIFY_CHANGE_INDEX,
+    OBSERVERS_ENQUEUE_SPLICE_INDEX,
+    OBSERVERS_BEGIN_SPLICE_INDEX,
+    OBSERVERS_END_SPLICE_INDEX,
     OBSERVERS_DELIVER_CHANGES_INDEX,
     GENERATOR_FUNCTION_MAP_INDEX,
     STRICT_MODE_GENERATOR_FUNCTION_MAP_INDEX,

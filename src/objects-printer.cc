@@ -182,14 +182,20 @@ void HeapObject::HeapObjectPrint(FILE* out) {
     case JS_MESSAGE_OBJECT_TYPE:
       JSMessageObject::cast(this)->JSMessageObjectPrint(out);
       break;
-    case JS_GLOBAL_PROPERTY_CELL_TYPE:
-      JSGlobalPropertyCell::cast(this)->JSGlobalPropertyCellPrint(out);
+    case CELL_TYPE:
+      Cell::cast(this)->CellPrint(out);
+      break;
+    case PROPERTY_CELL_TYPE:
+      PropertyCell::cast(this)->PropertyCellPrint(out);
       break;
     case JS_ARRAY_BUFFER_TYPE:
       JSArrayBuffer::cast(this)->JSArrayBufferPrint(out);
       break;
     case JS_TYPED_ARRAY_TYPE:
       JSTypedArray::cast(this)->JSTypedArrayPrint(out);
+      break;
+    case JS_DATA_VIEW_TYPE:
+      JSDataView::cast(this)->JSDataViewPrint(out);
       break;
 #define MAKE_STRUCT_CASE(NAME, Name, name) \
   case NAME##_TYPE:                        \
@@ -533,7 +539,8 @@ static const char* TypeToString(InstanceType type) {
     case JS_OBJECT_TYPE: return "JS_OBJECT";
     case JS_CONTEXT_EXTENSION_OBJECT_TYPE: return "JS_CONTEXT_EXTENSION_OBJECT";
     case ODDBALL_TYPE: return "ODDBALL";
-    case JS_GLOBAL_PROPERTY_CELL_TYPE: return "JS_GLOBAL_PROPERTY_CELL";
+    case CELL_TYPE: return "CELL";
+    case PROPERTY_CELL_TYPE: return "PROPERTY_CELL";
     case SHARED_FUNCTION_INFO_TYPE: return "SHARED_FUNCTION_INFO";
     case JS_GENERATOR_OBJECT_TYPE: return "JS_GENERATOR_OBJECT";
     case JS_MODULE_TYPE: return "JS_MODULE";
@@ -547,6 +554,9 @@ static const char* TypeToString(InstanceType type) {
     case JS_GLOBAL_OBJECT_TYPE: return "JS_GLOBAL_OBJECT";
     case JS_BUILTINS_OBJECT_TYPE: return "JS_BUILTINS_OBJECT";
     case JS_GLOBAL_PROXY_TYPE: return "JS_GLOBAL_PROXY";
+    case JS_ARRAY_BUFFER_TYPE: return "JS_ARRAY_BUFFER";
+    case JS_TYPED_ARRAY_TYPE: return "JS_TYPED_ARRAY";
+    case JS_DATA_VIEW_TYPE: return "JS_DATA_VIEW";
     case FOREIGN_TYPE: return "FOREIGN";
     case JS_MESSAGE_OBJECT_TYPE: return "JS_MESSAGE_OBJECT_TYPE";
 #define MAKE_STRUCT_CASE(NAME, Name, name) case NAME##_TYPE: return #NAME;
@@ -750,6 +760,7 @@ static const char* const weekdays[] = {
   "???", "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"
 };
 
+
 void JSDate::JSDatePrint(FILE* out) {
   HeapObject::PrintHeader(out, "JSDate");
   PrintF(out, " - map = 0x%p\n", reinterpret_cast<void*>(map()));
@@ -815,17 +826,30 @@ void JSArrayBuffer::JSArrayBufferPrint(FILE* out) {
 
 void JSTypedArray::JSTypedArrayPrint(FILE* out) {
   HeapObject::PrintHeader(out, "JSTypedArray");
-  PrintF(out, " - map = 0x%p\n", reinterpret_cast<void*>(map()));
+  PrintF(out, " - map = %p\n", reinterpret_cast<void*>(map()));
   PrintF(out, " - buffer =");
   buffer()->ShortPrint(out);
   PrintF(out, "\n - byte_offset = ");
   byte_offset()->ShortPrint(out);
   PrintF(out, "\n - byte_length = ");
   byte_length()->ShortPrint(out);
-  PrintF(out, " - length = ");
+  PrintF(out, "\n - length = ");
   length()->ShortPrint(out);
   PrintF("\n");
   PrintElements(out);
+}
+
+
+void JSDataView::JSDataViewPrint(FILE* out) {
+  HeapObject::PrintHeader(out, "JSDataView");
+  PrintF(out, " - map = %p\n", reinterpret_cast<void*>(map()));
+  PrintF(out, " - buffer =");
+  buffer()->ShortPrint(out);
+  PrintF(out, "\n - byte_offset = ");
+  byte_offset()->ShortPrint(out);
+  PrintF(out, "\n - byte_length = ");
+  byte_length()->ShortPrint(out);
+  PrintF("\n");
 }
 
 
@@ -841,7 +865,7 @@ void JSFunction::JSFunctionPrint(FILE* out) {
   PrintF(out, "\n   - name = ");
   shared()->name()->Print(out);
   PrintF(out, "\n - context = ");
-  unchecked_context()->ShortPrint(out);
+  context()->ShortPrint(out);
   PrintF(out, "\n - literals = ");
   literals()->ShortPrint(out);
   PrintF(out, "\n - code = ");
@@ -885,10 +909,6 @@ void SharedFunctionInfo::SharedFunctionInfoPrint(FILE* out) {
   PrintF(out, "\n - debug info = ");
   debug_info()->ShortPrint(out);
   PrintF(out, "\n - length = %d", length());
-  PrintF(out, "\n - has_only_simple_this_property_assignments = %d",
-         has_only_simple_this_property_assignments());
-  PrintF(out, "\n - this_property_assignments = ");
-  this_property_assignments()->ShortPrint(out);
   PrintF(out, "\n - optimized_code_map = ");
   optimized_code_map()->ShortPrint(out);
   PrintF(out, "\n");
@@ -919,8 +939,13 @@ void JSBuiltinsObject::JSBuiltinsObjectPrint(FILE* out) {
 }
 
 
-void JSGlobalPropertyCell::JSGlobalPropertyCellPrint(FILE* out) {
-  HeapObject::PrintHeader(out, "JSGlobalPropertyCell");
+void Cell::CellPrint(FILE* out) {
+  HeapObject::PrintHeader(out, "Cell");
+}
+
+
+void PropertyCell::PropertyCellPrint(FILE* out) {
+  HeapObject::PrintHeader(out, "PropertyCell");
 }
 
 
@@ -969,6 +994,13 @@ void DeclaredAccessorDescriptor::DeclaredAccessorDescriptorPrint(FILE* out) {
   HeapObject::PrintHeader(out, "DeclaredAccessorDescriptor");
   PrintF(out, "\n - internal field: ");
   serialized_data()->ShortPrint(out);
+}
+
+
+void Box::BoxPrint(FILE* out) {
+  HeapObject::PrintHeader(out, "Box");
+  PrintF(out, "\n - value: ");
+  value()->ShortPrint(out);
 }
 
 
@@ -1085,11 +1117,11 @@ void TypeSwitchInfo::TypeSwitchInfoPrint(FILE* out) {
 }
 
 
-void AllocationSiteInfo::AllocationSiteInfoPrint(FILE* out) {
-  HeapObject::PrintHeader(out, "AllocationSiteInfo");
-  PrintF(out, " - payload: ");
-  if (payload()->IsJSGlobalPropertyCell()) {
-    JSGlobalPropertyCell* cell = JSGlobalPropertyCell::cast(payload());
+void AllocationSite::AllocationSitePrint(FILE* out) {
+  HeapObject::PrintHeader(out, "AllocationSite");
+  PrintF(out, " - transition_info: ");
+  if (transition_info()->IsCell()) {
+    Cell* cell = Cell::cast(transition_info());
     Object* cell_contents = cell->value();
     if (cell_contents->IsSmi()) {
       ElementsKind kind = static_cast<ElementsKind>(
@@ -1099,16 +1131,27 @@ void AllocationSiteInfo::AllocationSiteInfoPrint(FILE* out) {
       PrintF(out, "\n");
       return;
     }
-  } else if (payload()->IsJSArray()) {
+  } else if (transition_info()->IsJSArray()) {
     PrintF(out, "Array literal ");
-    payload()->ShortPrint(out);
+    transition_info()->ShortPrint(out);
     PrintF(out, "\n");
     return;
   }
 
-  PrintF(out, "unknown payload ");
-  payload()->ShortPrint(out);
+  PrintF(out, "unknown transition_info");
+  transition_info()->ShortPrint(out);
   PrintF(out, "\n");
+}
+
+
+void AllocationSiteInfo::AllocationSiteInfoPrint(FILE* out) {
+  HeapObject::PrintHeader(out, "AllocationSiteInfo");
+  PrintF(out, " - allocation site: ");
+  if (IsValid()) {
+    GetAllocationSite()->Print();
+  } else {
+    PrintF(out, "<invalid>\n");
+  }
 }
 
 

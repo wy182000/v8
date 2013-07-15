@@ -32,10 +32,6 @@
 
 #include <stdlib.h>
 
-// TODO(dcarney): remove
-#define V8_ALLOW_ACCESS_TO_PERSISTENT_IMPLICIT
-#define V8_ALLOW_ACCESS_TO_PERSISTENT_ARROW
-
 #include "v8.h"
 
 #include "api.h"
@@ -137,10 +133,12 @@ class AsciiResource: public v8::String::ExternalAsciiStringResource,
 static void InitializeBuildingBlocks(Handle<String>* building_blocks,
                                      int bb_length,
                                      bool long_blocks,
-                                     RandomNumberGenerator* rng) {
+                                     RandomNumberGenerator* rng,
+                                     Zone* zone) {
   // A list of pointers that we don't have any interest in cleaning up.
   // If they are reachable from a root then leak detection won't complain.
-  Zone* zone = Isolate::Current()->runtime_zone();
+  Isolate* isolate = Isolate::Current();
+  Factory* factory = isolate->factory();
   for (int i = 0; i < bb_length; i++) {
     int len = rng->next(16);
     int slice_head_chars = 0;
@@ -172,7 +170,7 @@ static void InitializeBuildingBlocks(Handle<String>* building_blocks,
           buf[j] = rng->next(0x10000);
         }
         building_blocks[i] =
-            FACTORY->NewStringFromTwoByte(Vector<const uc16>(buf, len));
+            factory->NewStringFromTwoByte(Vector<const uc16>(buf, len));
         for (int j = 0; j < len; j++) {
           CHECK_EQ(buf[j], building_blocks[i]->Get(j));
         }
@@ -184,7 +182,7 @@ static void InitializeBuildingBlocks(Handle<String>* building_blocks,
           buf[j] = rng->next(0x80);
         }
         building_blocks[i] =
-            FACTORY->NewStringFromAscii(Vector<const char>(buf, len));
+            factory->NewStringFromAscii(Vector<const char>(buf, len));
         for (int j = 0; j < len; j++) {
           CHECK_EQ(buf[j], building_blocks[i]->Get(j));
         }
@@ -196,7 +194,7 @@ static void InitializeBuildingBlocks(Handle<String>* building_blocks,
           buf[j] = rng->next(0x10000);
         }
         Resource* resource = new(zone) Resource(Vector<const uc16>(buf, len));
-        building_blocks[i] = FACTORY->NewExternalStringFromTwoByte(resource);
+        building_blocks[i] = factory->NewExternalStringFromTwoByte(resource);
         for (int j = 0; j < len; j++) {
           CHECK_EQ(buf[j], building_blocks[i]->Get(j));
         }
@@ -209,7 +207,7 @@ static void InitializeBuildingBlocks(Handle<String>* building_blocks,
         }
         AsciiResource* resource =
             new(zone) AsciiResource(Vector<const char>(buf, len));
-        building_blocks[i] = FACTORY->NewExternalStringFromAscii(resource);
+        building_blocks[i] = factory->NewExternalStringFromAscii(resource);
         for (int j = 0; j < len; j++) {
           CHECK_EQ(buf[j], building_blocks[i]->Get(j));
         }
@@ -217,7 +215,7 @@ static void InitializeBuildingBlocks(Handle<String>* building_blocks,
       }
     }
     for (int j = slice_depth; j > 0; j--) {
-      building_blocks[i] = FACTORY->NewSubString(
+      building_blocks[i] = factory->NewSubString(
           building_blocks[i],
           slice_head_chars,
           building_blocks[i]->length() - slice_tail_chars);
@@ -265,7 +263,7 @@ void ConsStringStats::VerifyEqual(const ConsStringStats& that) const {
 class ConsStringGenerationData {
  public:
   static const int kNumberOfBuildingBlocks = 256;
-  explicit ConsStringGenerationData(bool long_blocks);
+  ConsStringGenerationData(bool long_blocks, Zone* zone);
   void Reset();
   inline Handle<String> block(int offset);
   inline Handle<String> block(uint32_t offset);
@@ -287,10 +285,11 @@ class ConsStringGenerationData {
 };
 
 
-ConsStringGenerationData::ConsStringGenerationData(bool long_blocks) {
+ConsStringGenerationData::ConsStringGenerationData(bool long_blocks,
+                                                   Zone* zone) {
   rng_.init();
   InitializeBuildingBlocks(
-      building_blocks_, kNumberOfBuildingBlocks, long_blocks, &rng_);
+      building_blocks_, kNumberOfBuildingBlocks, long_blocks, &rng_, zone);
   empty_string_ = Isolate::Current()->heap()->empty_string();
   Reset();
 }
@@ -349,7 +348,7 @@ void AccumulateStats(ConsString* cons_string, ConsStringStats* stats) {
 
 
 void AccumulateStats(Handle<String> cons_string, ConsStringStats* stats) {
-  AssertNoAllocation no_alloc;
+  DisallowHeapAllocation no_allocation;
   if (cons_string->IsConsString()) {
     return AccumulateStats(ConsString::cast(*cons_string), stats);
   }
@@ -404,6 +403,7 @@ void VerifyConsString(Handle<String> root, ConsStringGenerationData* data) {
 
 static Handle<String> ConstructRandomString(ConsStringGenerationData* data,
                                             unsigned max_recursion) {
+  Factory* factory = Isolate::Current()->factory();
   // Compute termination characteristics.
   bool terminate = false;
   bool flat = data->rng_.next(data->empty_leaf_threshold_);
@@ -450,7 +450,7 @@ static Handle<String> ConstructRandomString(ConsStringGenerationData* data,
     left = ConstructRandomString(data, max_recursion - 1);
   }
   // Build the cons string.
-  Handle<String> root = FACTORY->NewConsString(left, right);
+  Handle<String> root = factory->NewConsString(left, right);
   CHECK(root->IsConsString() && !root->IsFlat());
   // Special work needed for flat string.
   if (flat) {
@@ -465,11 +465,12 @@ static Handle<String> ConstructRandomString(ConsStringGenerationData* data,
 static Handle<String> ConstructLeft(
     ConsStringGenerationData* data,
     int depth) {
-  Handle<String> answer = FACTORY->NewStringFromAscii(CStrVector(""));
+  Factory* factory = Isolate::Current()->factory();
+  Handle<String> answer = factory->NewStringFromAscii(CStrVector(""));
   data->stats_.leaves_++;
   for (int i = 0; i < depth; i++) {
     Handle<String> block = data->block(i);
-    Handle<String> next = FACTORY->NewConsString(answer, block);
+    Handle<String> next = factory->NewConsString(answer, block);
     if (next->IsConsString()) data->stats_.leaves_++;
     data->stats_.chars_ += block->length();
     answer = next;
@@ -482,11 +483,12 @@ static Handle<String> ConstructLeft(
 static Handle<String> ConstructRight(
     ConsStringGenerationData* data,
     int depth) {
-  Handle<String> answer = FACTORY->NewStringFromAscii(CStrVector(""));
+  Factory* factory = Isolate::Current()->factory();
+  Handle<String> answer = factory->NewStringFromAscii(CStrVector(""));
   data->stats_.leaves_++;
   for (int i = depth - 1; i >= 0; i--) {
     Handle<String> block = data->block(i);
-    Handle<String> next = FACTORY->NewConsString(block, answer);
+    Handle<String> next = factory->NewConsString(block, answer);
     if (next->IsConsString()) data->stats_.leaves_++;
     data->stats_.chars_ += block->length();
     answer = next;
@@ -500,6 +502,7 @@ static Handle<String> ConstructBalancedHelper(
     ConsStringGenerationData* data,
     int from,
     int to) {
+  Factory* factory = Isolate::Current()->factory();
   CHECK(to > from);
   if (to - from == 1) {
     data->stats_.chars_ += data->block(from)->length();
@@ -508,7 +511,7 @@ static Handle<String> ConstructBalancedHelper(
   if (to - from == 2) {
     data->stats_.chars_ += data->block(from)->length();
     data->stats_.chars_ += data->block(from+1)->length();
-    return FACTORY->NewConsString(data->block(from), data->block(from+1));
+    return factory->NewConsString(data->block(from), data->block(from+1));
   }
   Handle<String> part1 =
     ConstructBalancedHelper(data, from, from + ((to - from) / 2));
@@ -516,7 +519,7 @@ static Handle<String> ConstructBalancedHelper(
     ConstructBalancedHelper(data, from + ((to - from) / 2), to);
   if (part1->IsConsString()) data->stats_.left_traversals_++;
   if (part2->IsConsString()) data->stats_.right_traversals_++;
-  return FACTORY->NewConsString(part1, part2);
+  return factory->NewConsString(part1, part2);
 }
 
 
@@ -568,8 +571,8 @@ TEST(Traverse) {
   printf("TestTraverse\n");
   CcTest::InitializeVM();
   v8::HandleScope scope(CcTest::isolate());
-  ZoneScope zone(Isolate::Current()->runtime_zone(), DELETE_ON_EXIT);
-  ConsStringGenerationData data(false);
+  Zone zone(Isolate::Current());
+  ConsStringGenerationData data(false, &zone);
   Handle<String> flat = ConstructBalanced(&data);
   FlattenString(flat);
   Handle<String> left_asymmetric = ConstructLeft(&data, DEEP_DEPTH);
@@ -658,8 +661,8 @@ void TestStringCharacterStream(BuildString build, int test_cases) {
   CcTest::InitializeVM();
   Isolate* isolate = Isolate::Current();
   HandleScope outer_scope(isolate);
-  ZoneScope zone(Isolate::Current()->runtime_zone(), DELETE_ON_EXIT);
-  ConsStringGenerationData data(true);
+  Zone zone(isolate);
+  ConsStringGenerationData data(true, &zone);
   for (int i = 0; i < test_cases; i++) {
     printf("%d\n", i);
     HandleScope inner_scope(isolate);
@@ -674,7 +677,7 @@ void TestStringCharacterStream(BuildString build, int test_cases) {
     Handle<String> cons_string = build(i, &data);
     ConsStringStats cons_string_stats;
     AccumulateStats(cons_string, &cons_string_stats);
-    AssertNoAllocation no_alloc;
+    DisallowHeapAllocation no_allocation;
     PrintStats(data);
     // Full verify of cons string.
     cons_string_stats.VerifyEqual(flat_string_stats);
@@ -694,6 +697,7 @@ static const int kCharacterStreamNonRandomCases = 8;
 
 static Handle<String> BuildEdgeCaseConsString(
     int test_case, ConsStringGenerationData* data) {
+  Factory* factory = Isolate::Current()->factory();
   data->Reset();
   switch (test_case) {
     case 0:
@@ -711,7 +715,7 @@ static Handle<String> BuildEdgeCaseConsString(
       data->stats_.chars_ += data->block(0)->length();
       data->stats_.chars_ += data->block(1)->length();
       data->stats_.leaves_ += 2;
-      return FACTORY->NewConsString(data->block(0), data->block(1));
+      return factory->NewConsString(data->block(0), data->block(1));
     case 6:
       // Simple flattened tree.
       data->stats_.chars_ += data->block(0)->length();
@@ -720,7 +724,7 @@ static Handle<String> BuildEdgeCaseConsString(
       data->stats_.empty_leaves_ += 1;
       {
         Handle<String> string =
-            FACTORY->NewConsString(data->block(0), data->block(1));
+            factory->NewConsString(data->block(0), data->block(1));
         FlattenString(string);
         return string;
       }
@@ -734,9 +738,9 @@ static Handle<String> BuildEdgeCaseConsString(
       data->stats_.left_traversals_ += 1;
       {
         Handle<String> left =
-            FACTORY->NewConsString(data->block(0), data->block(1));
+            factory->NewConsString(data->block(0), data->block(1));
         FlattenString(left);
-        return FACTORY->NewConsString(left, data->block(2));
+        return factory->NewConsString(left, data->block(2));
       }
     case 8:
       // Left node and right node flattened.
@@ -750,12 +754,12 @@ static Handle<String> BuildEdgeCaseConsString(
       data->stats_.right_traversals_ += 1;
       {
         Handle<String> left =
-            FACTORY->NewConsString(data->block(0), data->block(1));
+            factory->NewConsString(data->block(0), data->block(1));
         FlattenString(left);
         Handle<String> right =
-            FACTORY->NewConsString(data->block(2), data->block(2));
+            factory->NewConsString(data->block(2), data->block(2));
         FlattenString(right);
-        return FACTORY->NewConsString(left, right);
+        return factory->NewConsString(left, right);
       }
   }
   UNREACHABLE();
@@ -856,6 +860,7 @@ static const int DEEP_ASCII_DEPTH = 100000;
 TEST(DeepAscii) {
   printf("TestDeepAscii\n");
   CcTest::InitializeVM();
+  Factory* factory = Isolate::Current()->factory();
   v8::HandleScope scope(CcTest::isolate());
 
   char* foo = NewArray<char>(DEEP_ASCII_DEPTH);
@@ -863,12 +868,12 @@ TEST(DeepAscii) {
     foo[i] = "foo "[i % 4];
   }
   Handle<String> string =
-      FACTORY->NewStringFromAscii(Vector<const char>(foo, DEEP_ASCII_DEPTH));
-  Handle<String> foo_string = FACTORY->NewStringFromAscii(CStrVector("foo"));
+      factory->NewStringFromAscii(Vector<const char>(foo, DEEP_ASCII_DEPTH));
+  Handle<String> foo_string = factory->NewStringFromAscii(CStrVector("foo"));
   for (int i = 0; i < DEEP_ASCII_DEPTH; i += 10) {
-    string = FACTORY->NewConsString(string, foo_string);
+    string = factory->NewConsString(string, foo_string);
   }
-  Handle<String> flat_string = FACTORY->NewConsString(string, foo_string);
+  Handle<String> flat_string = factory->NewConsString(string, foo_string);
   FlattenString(flat_string);
 
   for (int i = 0; i < 500; i++) {
@@ -925,11 +930,11 @@ TEST(Utf8Conversion) {
 
 
 TEST(ExternalShortStringAdd) {
-  ZoneScope zonescope(Isolate::Current()->runtime_zone(), DELETE_ON_EXIT);
+  Isolate* isolate = Isolate::Current();
+  Zone zone(isolate);
 
   CcTest::InitializeVM();
   v8::HandleScope handle_scope(CcTest::isolate());
-  Zone* zone = Isolate::Current()->runtime_zone();
 
   // Make sure we cover all always-flat lengths and at least one above.
   static const int kMaxLength = 20;
@@ -943,25 +948,25 @@ TEST(ExternalShortStringAdd) {
 
   // Generate short ascii and non-ascii external strings.
   for (int i = 0; i <= kMaxLength; i++) {
-    char* ascii = zone->NewArray<char>(i + 1);
+    char* ascii = zone.NewArray<char>(i + 1);
     for (int j = 0; j < i; j++) {
       ascii[j] = 'a';
     }
     // Terminating '\0' is left out on purpose. It is not required for external
     // string data.
     AsciiResource* ascii_resource =
-        new(zone) AsciiResource(Vector<const char>(ascii, i));
+        new(&zone) AsciiResource(Vector<const char>(ascii, i));
     v8::Local<v8::String> ascii_external_string =
         v8::String::NewExternal(ascii_resource);
 
     ascii_external_strings->Set(v8::Integer::New(i), ascii_external_string);
-    uc16* non_ascii = zone->NewArray<uc16>(i + 1);
+    uc16* non_ascii = zone.NewArray<uc16>(i + 1);
     for (int j = 0; j < i; j++) {
       non_ascii[j] = 0x1234;
     }
     // Terminating '\0' is left out on purpose. It is not required for external
     // string data.
-    Resource* resource = new(zone) Resource(Vector<const uc16>(non_ascii, i));
+    Resource* resource = new(&zone) Resource(Vector<const uc16>(non_ascii, i));
     v8::Local<v8::String> non_ascii_external_string =
       v8::String::NewExternal(resource);
     non_ascii_external_strings->Set(v8::Integer::New(i),
@@ -1017,7 +1022,7 @@ TEST(CachedHashOverflow) {
   // values didn't fit in the hash field.
   // See http://code.google.com/p/v8/issues/detail?id=728
   Isolate* isolate = Isolate::Current();
-  ZoneScope zone(isolate->runtime_zone(), DELETE_ON_EXIT);
+  Zone zone(isolate);
 
   CcTest::InitializeVM();
   v8::HandleScope handle_scope(CcTest::isolate());
@@ -1063,13 +1068,14 @@ TEST(CachedHashOverflow) {
 TEST(SliceFromCons) {
   FLAG_string_slices = true;
   CcTest::InitializeVM();
+  Factory* factory = Isolate::Current()->factory();
   v8::HandleScope scope(CcTest::isolate());
   Handle<String> string =
-      FACTORY->NewStringFromAscii(CStrVector("parentparentparent"));
-  Handle<String> parent = FACTORY->NewConsString(string, string);
+      factory->NewStringFromAscii(CStrVector("parentparentparent"));
+  Handle<String> parent = factory->NewConsString(string, string);
   CHECK(parent->IsConsString());
   CHECK(!parent->IsFlat());
-  Handle<String> slice = FACTORY->NewSubString(parent, 1, 25);
+  Handle<String> slice = factory->NewSubString(parent, 1, 25);
   // After slicing, the original string becomes a flat cons.
   CHECK(parent->IsFlat());
   CHECK(slice->IsSlicedString());
@@ -1097,12 +1103,13 @@ class AsciiVectorResource : public v8::String::ExternalAsciiStringResource {
 TEST(SliceFromExternal) {
   FLAG_string_slices = true;
   CcTest::InitializeVM();
+  Factory* factory = Isolate::Current()->factory();
   v8::HandleScope scope(CcTest::isolate());
   AsciiVectorResource resource(
       i::Vector<const char>("abcdefghijklmnopqrstuvwxyz", 26));
-  Handle<String> string = FACTORY->NewExternalStringFromAscii(&resource);
+  Handle<String> string = factory->NewExternalStringFromAscii(&resource);
   CHECK(string->IsExternalString());
-  Handle<String> slice = FACTORY->NewSubString(string, 1, 25);
+  Handle<String> slice = factory->NewSubString(string, 1, 25);
   CHECK(slice->IsSlicedString());
   CHECK(string->IsExternalString());
   CHECK_EQ(SlicedString::cast(*slice)->parent(), *string);
@@ -1116,6 +1123,7 @@ TEST(TrivialSlice) {
   // actually creates a new string (it should not).
   FLAG_string_slices = true;
   CcTest::InitializeVM();
+  Factory* factory = Isolate::Current()->factory();
   v8::HandleScope scope(CcTest::isolate());
   v8::Local<v8::Value> result;
   Handle<String> string;
@@ -1130,7 +1138,7 @@ TEST(TrivialSlice) {
   string = v8::Utils::OpenHandle(v8::String::Cast(*result));
   CHECK(!string->IsSlicedString());
 
-  string = FACTORY->NewSubString(string, 0, 26);
+  string = factory->NewSubString(string, 0, 26);
   CHECK(!string->IsSlicedString());
   result = CompileRun(crosscheck);
   CHECK(result->IsString());
